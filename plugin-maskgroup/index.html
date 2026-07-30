@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Lrマスク</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="panel">
+      <h1>Lrマスク</h1>
+
+      <p id="status" class="status info">待機中です</p>
+
+      <div class="section">
+        <h2 class="section-title" data-section="experiment">▾ 実験: パネル内プレビュー</h2>
+        <div class="section-body" id="section-experiment">
+          <sp-button id="mgPreviewTest" variant="secondary" title="開いている写真をパネル内に表示し、その上のリングで円形マスクの形を決められるようにします（写真は変更しません）。中心＝移動、外側の4点＝大きさと縦横比、内側の点＝ぼかし、下の点＝回転">プレビューを表示</sp-button>
+          <div id="mgPreviewWrap" class="preview-wrap hidden">
+            <img id="mgPreviewImg" class="preview-img" />
+            <div id="mgPreviewHandleSizeTop" class="preview-handle"></div>
+            <div id="mgPreviewHandleSizeBottom" class="preview-handle"></div>
+            <div id="mgPreviewHandleSizeLeft" class="preview-handle"></div>
+            <div id="mgPreviewHandleSizeRight" class="preview-handle"></div>
+            <div id="mgPreviewHandleFeather" class="preview-handle feather"></div>
+            <div id="mgPreviewHandleRotate" class="preview-handle rotate"></div>
+            <div id="mgPreviewLinearWidth" class="preview-handle"></div>
+            <div id="mgPreviewLinearRotate" class="preview-handle rotate"></div>
+            <div id="mgPreviewCenter" class="preview-center"></div>
+          </div>
+          <p id="mgPreviewMeta" class="meta"></p>
+        </div>
+      </div>
+
+      <p class="choice-label">1. マスクの種類を選ぶ</p>
+      <div class="grid two">
+        <sp-button
+          id="mgKindBrush"
+          data-kind="brush"
+          variant="secondary"
+          title="押すとブラシに切り替わり、白で塗ると赤く表示されて範囲に入ります。Xキーで描画色を白⇄黒に入れ替えると、黒で塗って消せます（Photoshop標準のXキー）。「マスクを作成」で塗った形がそのままマスクになります"
+        >ブラシ</sp-button>
+        <sp-button
+          id="mgKindLinear"
+          data-kind="linear"
+          variant="secondary"
+          title="押すと画面中央に赤いグラデの下書きができます。画面上の操作は使いません。向き・幅・位置はすべてパネルのスライダーで決めます。決まったら「マスクを作成」で確定します"
+        >線形グラデ</sp-button>
+        <sp-button
+          id="mgKindCircle"
+          data-kind="circle"
+          variant="secondary"
+          title="押すと画面中央に赤い柔らかい円の下書きができます。画面上の操作は使いません。大きさ・縦横比・回転・ぼかし・位置はすべてパネルのスライダーで決めます。決まったら「マスクを作成」で確定します"
+        >円形</sp-button>
+        <sp-button
+          id="mgKindSelection"
+          data-kind="selection"
+          variant="secondary"
+          title="現在の選択範囲（点線）からマスクを作ります（色域指定・被写体選択などにも）"
+        >選択範囲</sp-button>
+        <sp-button
+          id="mgKindLuminosity"
+          data-kind="luminosity"
+          variant="secondary"
+          title="画像の明るさからマスクを作ります（Lightroomの明るさ範囲マスク相当）。明部/中間調/暗部と段階を選んで「マスクを作成」を押してください"
+        >輝度範囲</sp-button>
+        <sp-button
+          id="mgKindSaturation"
+          data-kind="saturation"
+          variant="secondary"
+          title="画像の彩度からマスクを作ります（Lightroomの彩度範囲マスク相当）。空の青・紅葉・動物の毛色など、彩度が高い/低い部分だけに効かせたいときに。彩度の高低と段階を選んで「マスクを作成」を押してください"
+        >彩度範囲</sp-button>
+        <sp-button
+          id="mgKindAll"
+          data-kind="all"
+          variant="secondary"
+          title="画像全体に効くマスクを作ります。写真全体の露出や色をスライダーで整えたいときに（あとから「ブラシで加減」で部分的に外すこともできます）"
+        >全体</sp-button>
+      </div>
+
+      <div id="mgLumSettings" class="hidden">
+        <p class="choice-label">明るさの範囲</p>
+        <sp-radio-group id="mgLumTarget">
+          <sp-radio value="lights" checked title="画像の明るい部分に効かせます">明部</sp-radio>
+          <sp-radio value="mids" title="明部でも暗部でもない中間の明るさに効かせます">中間調</sp-radio>
+          <sp-radio value="darks" title="画像の暗い部分に効かせます">暗部</sp-radio>
+        </sp-radio-group>
+        <sp-slider
+          id="mgLumLevel"
+          min="1"
+          max="5"
+          step="1"
+          value="2"
+          title="数値が大きいほど、より明るい（暗い）部分だけに範囲が狭まります。中間調は1〜3が有効です"
+        >
+          <sp-label slot="label">段階（大きいほど狭い）</sp-label>
+        </sp-slider>
+      </div>
+
+      <div id="mgSatSettings" class="hidden">
+        <p class="choice-label">彩度の範囲</p>
+        <sp-radio-group id="mgSatTarget">
+          <sp-radio value="high" checked title="画像の彩度が高い部分に効かせます（空の青・紅葉・動物の毛色など）">彩度が高い</sp-radio>
+          <sp-radio value="low" title="画像の彩度が低い部分に効かせます">彩度が低い</sp-radio>
+        </sp-radio-group>
+        <sp-slider
+          id="mgSatLevel"
+          min="1"
+          max="5"
+          step="1"
+          value="2"
+          title="数値が大きいほど、より彩度が高い（低い）部分だけに範囲が狭まります"
+        >
+          <sp-label slot="label">段階（大きいほど狭い）</sp-label>
+        </sp-slider>
+      </div>
+
+      <div id="mgLinearTools" class="section hidden">
+        <h2 class="section-title" data-section="linear">▸ 線形グラデの形を調整（4項目）</h2>
+        <div class="section-body collapsed" id="section-linear">
+          <sp-slider
+            id="mgLinearAngle"
+            min="-180"
+            max="180"
+            step="1"
+            value="0"
+            title="グラデの向きです（0=上が効果最大で下へ弱まる、90=左が効果最大、180=下が効果最大）。動かすとすぐ反映されます。ダブルクリックで既定値に戻ります"
+          >
+            <sp-label slot="label">向き (°)</sp-label>
+          </sp-slider>
+          <sp-slider
+            id="mgLinearWidth"
+            min="1"
+            max="200"
+            step="1"
+            value="50"
+            title="効果が最大から0になるまでの距離です（画像の短辺に対する割合）。大きいほどなだらかになります。動かすとすぐ反映されます。ダブルクリックで既定値に戻ります"
+          >
+            <sp-label slot="label">幅（なだらかさ・%）</sp-label>
+          </sp-slider>
+          <sp-slider
+            id="mgLinearX"
+            min="0"
+            max="100"
+            step="1"
+            value="50"
+            title="グラデの中心の左右位置です（0=左端、100=右端）。動かすとすぐ反映されます。ダブルクリックで既定値に戻ります"
+          >
+            <sp-label slot="label">位置: 左右 (%)</sp-label>
+          </sp-slider>
+          <sp-slider
+            id="mgLinearY"
+            min="0"
+            max="100"
+            step="1"
+            value="50"
+            title="グラデの中心の上下位置です（0=上端、100=下端）。動かすとすぐ反映されます。ダブルクリックで既定値に戻ります"
+          >
+            <sp-label slot="label">位置: 上下 (%)</sp-label>
+          </sp-slider>
+        </div>
+      </div>
+
+      <div id="mgCircleTools" class="section hidden">
+        <h2 class="section-title" data-section="circle">▸ 円形の形を調整（7項目）</h2>
+        <div class="section-body collapsed" id="section-circle">
+          <sp-slider
+            id="mgCircleSize"
+            min="5"
+            max="200"
+            step="1"
+            value="40"
+            title="画像の短辺に対する円の直径の割合です（100%で短辺いっぱい。100%を超えると円が画像からはみ出します。Lightroomでも同様にはみ出せます）。動かすとすぐ反映されます。ダブルクリックで既定値に戻ります"
+          >
+            <sp-label slot="label">大きさ (%)</sp-label>
+          </sp-slider>
+          <sp-slider
+            id="mgCircleRatio"
+            min="-100"
+            max="100"
+            step="1"
+            value="0"
+            title="円の縦横比です（0=正円、+で縦長、-で横長。面積はおおよそ保たれます）。±100で約8:1まで楕円にできます。Photoshopの設定に関係なく楕円にできます。動かすとすぐ反映されます。ダブルクリックで既定値に戻ります"
+          >
+            <sp-label slot="label">縦横比（−横長 ← 0=正円 → ＋縦長）</sp-label>
+          </sp-slider>
+          <sp-slider
+            id="mgCircleAngle"
+            min="-90"
+            max="90"
+            step="1"
+            value="0"
+            title="円（楕円）の傾きです。動かすとすぐ反映されます。この環境で回転に対応していない場合はステータスに表示されます。ダブルクリックで既定値に戻ります"
+          >
+            <sp-label slot="label">回転 (°)</sp-label>
+          </sp-slider>
+          <sp-slider
+            id="mgCircleFeather"
+            min="0"
+            max="1250"
+            step="10"
+            value="200"
+            title="円の縁のぼかし幅です（px）。最大1250px（選択範囲のフェザー250px＋追加のガウスぼかし1000pxの合計上限。どちらもPhotoshop側の上限）です。柔らかさを上げるほどガウス側に寄るので、広くぼかしたいときは「ぼかしの柔らかさ」も上げてください。動かすとすぐ反映されます。ダブルクリックで既定値に戻ります"
+          >
+            <sp-label slot="label">ぼかし幅 (px)</sp-label>
+          </sp-slider>
+          <sp-slider
+            id="mgCircleSoftness"
+            min="0"
+            max="100"
+            step="1"
+            value="50"
+            title="ぼかしの縁の柔らかさです（0=硬め、100=柔らかめ）。ぼかし幅を選択範囲のフェザーと追加のガウスぼかしにどう配分するかを決めます。動かすとすぐ反映されます。ダブルクリックで既定値に戻ります"
+          >
+            <sp-label slot="label">ぼかしの柔らかさ (%)</sp-label>
+          </sp-slider>
+          <sp-slider
+            id="mgCircleX"
+            min="0"
+            max="100"
+            step="1"
+            value="50"
+            title="円の中心の左右位置です（0=左端、100=右端、50=中央）。画面ドラッグの代わりにこの数値で決めます。動かすとすぐ反映されます。ダブルクリックで既定値に戻ります"
+          >
+            <sp-label slot="label">位置: 左右 (%)</sp-label>
+          </sp-slider>
+          <sp-slider
+            id="mgCircleY"
+            min="0"
+            max="100"
+            step="1"
+            value="50"
+            title="円の中心の上下位置です（0=上端、100=下端、50=中央）。画面ドラッグの代わりにこの数値で決めます。動かすとすぐ反映されます。ダブルクリックで既定値に戻ります"
+          >
+            <sp-label slot="label">位置: 上下 (%)</sp-label>
+          </sp-slider>
+        </div>
+      </div>
+
+      <sp-slider
+        id="mgFeather"
+        min="0"
+        max="250"
+        step="1"
+        value="60"
+        title="「選択範囲」からマスクを作るときの境界のぼかし量です（被写体選択・色域指定などの硬い縁を緩めます）"
+      >
+        <sp-label slot="label">境界のぼかし（選択範囲用・px）</sp-label>
+      </sp-slider>
+
+      <p class="choice-label">形を組み立てる（複数の形を1つのマスクにする）</p>
+      <div class="grid two">
+        <sp-button
+          id="mgBuildAdd"
+          variant="secondary"
+          title="いま作っている形を、組み立て中のマスクに足します。足したあと別の種類を選んで次の形を作れます（Lightroomの「追加」相当）"
+        >形を足す</sp-button>
+        <sp-button
+          id="mgBuildSubtract"
+          variant="secondary"
+          title="いま作っている形を、組み立て中のマスクから引きます（Lightroomの「減算」相当）。例: 円形を足したあと、被写体選択を引く"
+        >形を引く</sp-button>
+      </div>
+      <sp-button
+        id="mgBuildIntersect"
+        variant="secondary"
+        class="hidden"
+        title="いま組み立て中の範囲と、いま作っている形の「共通部分」だけを残します（Lightroomにはない絞り込み操作）。例: 円形を足したあと輝度範囲で絞り込むと、円の中でかつ明るい部分だけが残ります"
+      >形で絞り込む（共通部分だけ残す）</sp-button>
+      <sp-button
+        id="mgCancelDraft"
+        variant="secondary"
+        title="いま作りかけの形（赤い下書き）を消します。組み立て済みの形はそのまま残ります。写真を確認したいときにも使えます"
+      >作りかけの表示を消す</sp-button>
+      <p id="mgBuildState" class="hint hidden"></p>
+      <sp-button
+        id="mgBuildClear"
+        variant="secondary"
+        class="hidden"
+        title="組み立て中の形をすべて破棄して、最初からやり直します"
+      >組み立てをやり直す</sp-button>
+
+      <p class="choice-label">2. マスクを作成</p>
+      <sp-button
+        id="mgCreate"
+        title="選んだ種類でマスクを作成します。ブラシ=塗った下書きの形、線形グラデ=引いた下書きのグラデ、円形=調整した下書きの円、選択範囲=選択範囲、輝度範囲=画像の明るさ、全体=画像全体がそのままマスクになります"
+      >マスクを作成</sp-button>
+
+      <p class="choice-label">3. スライダーで調整（下の一覧で対象を切替）</p>
+      <div id="mgList" class="item-list"></div>
+      <div class="grid two">
+        <sp-button
+          id="mgOverlay"
+          variant="secondary"
+          title="選択範囲があればその範囲を、なければ編集対象マスクの範囲を赤く表示します（もう一度押すと解除）。マスクを作る前に選択範囲を確認したいときにも使えます"
+        >範囲を赤く表示</sp-button>
+        <sp-button
+          id="mgDelete"
+          variant="secondary"
+          title="編集対象のマスク（中の調整レイヤーごと）を削除します"
+        >削除</sp-button>
+      </div>
+
+      <div class="section">
+        <h2 class="section-title" data-section="maskedit">▸ 範囲の変更</h2>
+        <div class="section-body collapsed" id="section-maskedit">
+          <div class="grid two">
+            <sp-button
+              id="mgTransform"
+              variant="secondary"
+              title="円形などのマスクを移動・拡大縮小します。画像上でドラッグして調整し、Enterで確定（Escで取消）"
+            >範囲を変形</sp-button>
+            <sp-button
+              id="mgMaskAdd"
+              variant="secondary"
+              title="いま選んでいる種類で作った形を、編集対象のマスクに追加します（Lightroomの「追加」相当）。例: 円形マスクに別の円を足す"
+            >マスクに追加</sp-button>
+            <sp-button
+              id="mgMaskSubtract"
+              variant="secondary"
+              title="いま選んでいる種類で作った形を、編集対象のマスクから除外します（Lightroomの「減算」相当）。例: 円形マスクから被写体選択を抜く"
+            >マスクから削除</sp-button>
+            <sp-button
+              id="mgEditMask"
+              variant="secondary"
+              title="マスクをブラシで加減します。なぞると範囲に追加、Xキーで切り替えると範囲から除外できます"
+            >ブラシで加減</sp-button>
+            <sp-button
+              id="mgReplaceMask"
+              variant="secondary"
+              title="新しく作った選択範囲で、編集対象のマスクを置き換えます"
+            >範囲を作り直す</sp-button>
+            <sp-button
+              id="mgInvertMask"
+              variant="secondary"
+              title="マスクの効く範囲を反転します（例: 円形を反転して外側＝周辺だけを暗くする、明部を反転して明部以外に効かせる）"
+            >範囲を反転</sp-button>
+            <sp-button
+              id="mgRefresh"
+              variant="secondary"
+              title="Photoshop側でレイヤーを増減した後などに、マスクの一覧を読み直します"
+            >一覧を更新</sp-button>
+          </div>
+        </div>
+      </div>
+
+      <p id="mgActive" class="edit-label">編集対象: —</p>
+      <p id="mgNoTarget" class="hint">
+        マスクを作成するか一覧から選ぶと、ここに調整スライダーが表示されます。
+      </p>
+
+      <div id="mgAdjustArea" class="hidden">
+        <sp-slider
+          id="mgMaskFeather"
+          min="0"
+          max="250"
+          step="1"
+          value="0"
+          title="編集対象マスクの境界のぼかしを後から調整します（Photoshopのマスク「ぼかし」と同じ・非破壊。Lrの線形グラデのような柔らかい境界に）。ダブルクリックで0に戻ります"
+        >
+          <sp-label slot="label">境界のぼかし（作成後・px）</sp-label>
+        </sp-slider>
+        <div class="section">
+          <h2 class="section-title" data-section="light">▸ ライト</h2>
+          <div class="section-body collapsed" id="section-light">
+            <sp-slider
+              id="mgExposure"
+              min="-100"
+              max="100"
+              step="1"
+              value="0"
+              title="編集対象マスクの露光量です。動かした瞬間に反映されます（適用ボタンはありません）。ダブルクリックで初期値(0)に戻ります"
+            >
+              <sp-label slot="label">露光量</sp-label>
+            </sp-slider>
+            <div class="param-actions">
+              <sp-action-button id="mgAdd_exposure" disabled
+                title="この項目の調整レイヤーをマスク内に追加します（追加した項目だけがレイヤーになります）"
+              >レイヤー追加</sp-action-button>
+              <sp-action-button id="mgDel_exposure" disabled
+                title="この項目の調整レイヤーを削除します（効果ごと消えます。Ctrl+Zで戻せます）"
+              >レイヤーから削除</sp-action-button>
+            </div>
+
+            <sp-slider
+              id="mgContrast"
+              min="-50"
+              max="100"
+              step="1"
+              value="0"
+              title="編集対象マスクのコントラストです。動かした瞬間に反映されます。ダブルクリックで初期値(0)に戻ります"
+            >
+              <sp-label slot="label">コントラスト</sp-label>
+            </sp-slider>
+            <div class="param-actions">
+              <sp-action-button id="mgAdd_contrast" disabled
+                title="この項目の調整レイヤーをマスク内に追加します（追加した項目だけがレイヤーになります）"
+              >レイヤー追加</sp-action-button>
+              <sp-action-button id="mgDel_contrast" disabled
+                title="この項目の調整レイヤーを削除します（効果ごと消えます。Ctrl+Zで戻せます）"
+              >レイヤーから削除</sp-action-button>
+            </div>
+
+            <sp-slider
+              id="mgHighlights"
+              min="-100"
+              max="100"
+              step="1"
+              value="0"
+              title="ハイライト（明部側のトーン）を上げ下げします。ダブルクリックで初期値(0)に戻ります"
+            >
+              <sp-label slot="label">ハイライト</sp-label>
+            </sp-slider>
+            <div class="param-actions">
+              <sp-action-button id="mgAdd_highlights" disabled
+                title="この項目の調整レイヤーをマスク内に追加します（追加した項目だけがレイヤーになります）"
+              >レイヤー追加</sp-action-button>
+              <sp-action-button id="mgDel_highlights" disabled
+                title="この項目の調整レイヤーを削除します（効果ごと消えます。Ctrl+Zで戻せます）"
+              >レイヤーから削除</sp-action-button>
+            </div>
+
+            <sp-slider
+              id="mgShadows"
+              min="-100"
+              max="100"
+              step="1"
+              value="0"
+              title="シャドウ（暗部側のトーン）を持ち上げ/締めます。ダブルクリックで初期値(0)に戻ります"
+            >
+              <sp-label slot="label">シャドウ</sp-label>
+            </sp-slider>
+            <div class="param-actions">
+              <sp-action-button id="mgAdd_shadows" disabled
+                title="この項目の調整レイヤーをマスク内に追加します（追加した項目だけがレイヤーになります）"
+              >レイヤー追加</sp-action-button>
+              <sp-action-button id="mgDel_shadows" disabled
+                title="この項目の調整レイヤーを削除します（効果ごと消えます。Ctrl+Zで戻せます）"
+              >レイヤーから削除</sp-action-button>
+            </div>
+
+            <sp-slider
+              id="mgWhites"
+              min="-100"
+              max="100"
+              step="1"
+              value="0"
+              title="白レベル（最も明るい部分）を調整します。ダブルクリックで初期値(0)に戻ります"
+            >
+              <sp-label slot="label">白レベル</sp-label>
+            </sp-slider>
+            <div class="param-actions">
+              <sp-action-button id="mgAdd_whites" disabled
+                title="この項目の調整レイヤーをマスク内に追加します（追加した項目だけがレイヤーになります）"
+              >レイヤー追加</sp-action-button>
+              <sp-action-button id="mgDel_whites" disabled
+                title="この項目の調整レイヤーを削除します（効果ごと消えます。Ctrl+Zで戻せます）"
+              >レイヤーから削除</sp-action-button>
+            </div>
+
+            <sp-slider
+              id="mgBlacks"
+              min="-100"
+              max="100"
+              step="1"
+              value="0"
+              title="黒レベル（最も暗い部分）を調整します。ダブルクリックで初期値(0)に戻ります"
+            >
+              <sp-label slot="label">黒レベル</sp-label>
+            </sp-slider>
+            <div class="param-actions">
+              <sp-action-button id="mgAdd_blacks" disabled
+                title="この項目の調整レイヤーをマスク内に追加します（追加した項目だけがレイヤーになります）"
+              >レイヤー追加</sp-action-button>
+              <sp-action-button id="mgDel_blacks" disabled
+                title="この項目の調整レイヤーを削除します（効果ごと消えます。Ctrl+Zで戻せます）"
+              >レイヤーから削除</sp-action-button>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <h2 class="section-title" data-section="color">▸ カラー</h2>
+          <div class="section-body collapsed" id="section-color">
+            <sp-slider
+              id="mgTemp"
+              min="-100"
+              max="100"
+              step="1"
+              value="0"
+              title="色温度です。+で暖色（イエロー寄り）、-で寒色（ブルー寄り）。ダブルクリックで初期値(0)に戻ります"
+            >
+              <sp-label slot="label">色温度</sp-label>
+            </sp-slider>
+            <div class="param-actions">
+              <sp-action-button id="mgAdd_temp" disabled
+                title="この項目の調整レイヤーをマスク内に追加します（追加した項目だけがレイヤーになります）"
+              >レイヤー追加</sp-action-button>
+              <sp-action-button id="mgDel_temp" disabled
+                title="この項目の調整レイヤーを削除します（効果ごと消えます。Ctrl+Zで戻せます）"
+              >レイヤーから削除</sp-action-button>
+            </div>
+
+            <sp-slider
+              id="mgTint"
+              min="-100"
+              max="100"
+              step="1"
+              value="0"
+              title="色かぶり補正です。+でマゼンタ寄り、-でグリーン寄り。ダブルクリックで初期値(0)に戻ります"
+            >
+              <sp-label slot="label">色かぶり補正</sp-label>
+            </sp-slider>
+            <div class="param-actions">
+              <sp-action-button id="mgAdd_tint" disabled
+                title="この項目の調整レイヤーをマスク内に追加します（追加した項目だけがレイヤーになります）"
+              >レイヤー追加</sp-action-button>
+              <sp-action-button id="mgDel_tint" disabled
+                title="この項目の調整レイヤーを削除します（効果ごと消えます。Ctrl+Zで戻せます）"
+              >レイヤーから削除</sp-action-button>
+            </div>
+
+            <sp-slider
+              id="mgVibrance"
+              min="-100"
+              max="100"
+              step="1"
+              value="0"
+              title="自然な彩度です。既に鮮やかな色を保護しながら彩度を調整します。ダブルクリックで初期値(0)に戻ります"
+            >
+              <sp-label slot="label">自然な彩度</sp-label>
+            </sp-slider>
+            <div class="param-actions">
+              <sp-action-button id="mgAdd_vibrance" disabled
+                title="この項目の調整レイヤーをマスク内に追加します（追加した項目だけがレイヤーになります）"
+              >レイヤー追加</sp-action-button>
+              <sp-action-button id="mgDel_vibrance" disabled
+                title="この項目の調整レイヤーを削除します（効果ごと消えます。Ctrl+Zで戻せます）"
+              >レイヤーから削除</sp-action-button>
+            </div>
+
+            <sp-slider
+              id="mgSaturation"
+              min="-100"
+              max="100"
+              step="1"
+              value="0"
+              title="編集対象マスクの彩度です。動かした瞬間に反映されます。ダブルクリックで初期値(0)に戻ります"
+            >
+              <sp-label slot="label">彩度</sp-label>
+            </sp-slider>
+            <div class="param-actions">
+              <sp-action-button id="mgAdd_saturation" disabled
+                title="この項目の調整レイヤーをマスク内に追加します（追加した項目だけがレイヤーになります）"
+              >レイヤー追加</sp-action-button>
+              <sp-action-button id="mgDel_saturation" disabled
+                title="この項目の調整レイヤーを削除します（効果ごと消えます。Ctrl+Zで戻せます）"
+              >レイヤーから削除</sp-action-button>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <h2 class="section-title" data-section="effects">▸ 効果</h2>
+          <div class="section-body collapsed" id="section-effects">
+            <sp-slider
+              id="mgClarity"
+              min="-100"
+              max="100"
+              step="1"
+              value="0"
+              title="明瞭度の簡易近似（中間調のS字カーブ）。本来の明瞭度はCamera Raw専用のため近い効果を再現します。ダブルクリックで初期値(0)に戻ります"
+            >
+              <sp-label slot="label">明瞭度（簡易）</sp-label>
+            </sp-slider>
+            <div class="param-actions">
+              <sp-action-button id="mgAdd_clarity" disabled
+                title="この項目の調整レイヤーをマスク内に追加します（追加した項目だけがレイヤーになります）"
+              >レイヤー追加</sp-action-button>
+              <sp-action-button id="mgDel_clarity" disabled
+                title="この項目の調整レイヤーを削除します（効果ごと消えます。Ctrl+Zで戻せます）"
+              >レイヤーから削除</sp-action-button>
+            </div>
+
+            <sp-slider
+              id="mgDehaze"
+              min="-100"
+              max="100"
+              step="1"
+              value="0"
+              title="かすみの除去の簡易近似（黒点・ガンマ・白点の複合）。本来のかすみ除去はCamera Raw専用のため近い効果を再現します。ダブルクリックで初期値(0)に戻ります"
+            >
+              <sp-label slot="label">かすみの除去（簡易）</sp-label>
+            </sp-slider>
+            <div class="param-actions">
+              <sp-action-button id="mgAdd_dehaze" disabled
+                title="この項目の調整レイヤーをマスク内に追加します（追加した項目だけがレイヤーになります）"
+              >レイヤー追加</sp-action-button>
+              <sp-action-button id="mgDel_dehaze" disabled
+                title="この項目の調整レイヤーを削除します（効果ごと消えます。Ctrl+Zで戻せます）"
+              >レイヤーから削除</sp-action-button>
+            </div>
+
+            <sp-slider
+              id="mgDensity"
+              min="-100"
+              max="100"
+              step="1"
+              value="0"
+              title="色の深みを増す簡易近似（彩度を上げつつ明度をわずかに下げる）。ダブルクリックで初期値(0)に戻ります"
+            >
+              <sp-label slot="label">色の密度（簡易）</sp-label>
+            </sp-slider>
+            <div class="param-actions">
+              <sp-action-button id="mgAdd_density" disabled
+                title="この項目の調整レイヤーをマスク内に追加します（追加した項目だけがレイヤーになります）"
+              >レイヤー追加</sp-action-button>
+              <sp-action-button id="mgDel_density" disabled
+                title="この項目の調整レイヤーを削除します（効果ごと消えます。Ctrl+Zで戻せます）"
+              >レイヤーから削除</sp-action-button>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <h2 class="section-title" data-section="mixer">▸ カラーミキサー（色ごとの調整）</h2>
+          <div class="section-body collapsed" id="section-mixer">
+            <sp-radio-group id="mgMixRange">
+              <sp-radio value="reds" checked>レッド</sp-radio>
+              <sp-radio value="yellows">イエロー</sp-radio>
+              <sp-radio value="greens">グリーン</sp-radio>
+              <sp-radio value="cyans">シアン</sp-radio>
+              <sp-radio value="blues">ブルー</sp-radio>
+              <sp-radio value="magentas">マゼンタ</sp-radio>
+            </sp-radio-group>
+
+            <sp-slider
+              id="mgMixHue"
+              min="-100"
+              max="100"
+              step="1"
+              value="0"
+              title="選んだ色系統の色相をずらします。ダブルクリックで初期値(0)に戻ります"
+            >
+              <sp-label slot="label">色相</sp-label>
+            </sp-slider>
+
+            <sp-slider
+              id="mgMixSat"
+              min="-100"
+              max="100"
+              step="1"
+              value="0"
+              title="選んだ色系統の彩度を調整します。ダブルクリックで初期値(0)に戻ります"
+            >
+              <sp-label slot="label">彩度</sp-label>
+            </sp-slider>
+
+            <sp-slider
+              id="mgMixLum"
+              min="-100"
+              max="100"
+              step="1"
+              value="0"
+              title="選んだ色系統の輝度（明るさ）を調整します。ダブルクリックで初期値(0)に戻ります"
+            >
+              <sp-label slot="label">輝度</sp-label>
+            </sp-slider>
+          </div>
+        </div>
+
+        <div class="section">
+          <h2 class="section-title" data-section="fx">▸ 特殊効果</h2>
+          <div class="section-body collapsed" id="section-fx">
+            <sp-slider
+              id="mgOrtonStrength"
+              min="10"
+              max="100"
+              step="5"
+              value="50"
+              title="オートン効果の強さ（グループの不透明度）です。かけた後でもPhotoshopのレイヤーパネルで変えられます"
+            >
+              <sp-label slot="label">オートンの強さ (%)</sp-label>
+            </sp-slider>
+            <sp-slider
+              id="mgOrtonBlur"
+              min="0"
+              max="200"
+              step="5"
+              value="50"
+              title="オートンのぼかし幅です。0で「ぼかし無し」（色とコントラストだけ）。大きくするほど滲みは広がりますが、明暗が打ち消し合って効果は穏やかになります。強くしたいときは「強さ」を上げてください"
+            >
+              <sp-label slot="label">オートンのぼかし (px・0でぼかし無し)</sp-label>
+            </sp-slider>
+            <sp-button
+              id="mgFxOrton"
+              variant="secondary"
+              title="編集対象のマスクの範囲だけに、オートン効果（柔らかい光の滲み）をかけます。ぼかし・乗算・明るさの3枚がマスクグループの中に作られ、後から個別に調整できます。※「オートン効果」グループの名前を変えると、かけ直し時に別物として扱われ重ね掛けになります"
+            >オートン効果をかける</sp-button>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
+        <h2 class="section-title" data-section="help">▸ ヘルプ（使い方）</h2>
+        <div class="section-body collapsed" id="section-help">
+          <p class="hint">
+            使い方: 1で種類を選び、2の「マスクを作成」を押したときだけマスクが作られます。
+            <b>ブラシ</b>: 白で塗ると赤い下書きで見え、範囲に入ります。
+            Xキーで描画色を白⇄黒に入れ替えられる（Photoshop標準の操作。
+            Lightroomの「Alt+ドラッグで選択解除」に相当）ので、黒に切り替えて
+            塗ると範囲から消せます。「マスクを作成」で塗った形がそのまま
+            マスクに。作成後も塗り足しで範囲を広げられます。
+            <b>線形グラデ</b>: 押すと中央に赤いグラデができます（画面上の操作はありません）。
+            向き・幅・位置の4本のスライダーだけで形を決め、「マスクを作成」で確定します。
+            <b>円形</b>: 押すと中央に赤い円ができます（画面上の操作はありません）。
+            大きさ・縦横比・回転・ぼかし幅・ぼかしの柔らかさ・位置（左右/上下）の
+            7本のスライダーだけで形を決め、「マスクを作成」で確定します。
+            <b>選択範囲</b>: 好きな選択ツールで範囲を作ってから作成。
+            <b>輝度範囲</b>: 明部/中間調/暗部と段階（狭さ）を選んでから作成。
+            画像の明るさに応じたマスクになります（Lightroomの明るさ範囲マスク相当）。
+            <b>全体</b>: 画像全体に効くマスク。写真全体の仕上げ調整に。
+            スライダーは編集対象のマスクがあるときだけ表示され、
+            動かした瞬間に反映されます（適用ボタンはありません）。
+            調整レイヤーは対応スライダーを初めて動かしたときに追加されます。
+            スライダーをダブルクリックすると、その項目だけ初期値(0)に戻ります。
+            <b>マスクに追加/マスクから削除</b>: 1で種類を選んで形を作ったあと、
+            確定せずにこのボタンを押すと、その形が編集対象のマスクに白（追加）/
+            黒（削除）で合成されます（Lightroomの「追加」「減算」相当）。
+            例: 円形マスクを作ったあと被写体選択を「マスクから削除」すると、
+            円の中から被写体だけが除外されます。
+            <b>形を組み立てる</b>: マスクを作る<b>前</b>に複数の形を積み上げたいときに使います。
+            1で種類を選んで形を作ったら「形を足す」または「形を引く」を押し、
+            続けて別の種類を選んで次の形を作る、を繰り返せます（下書きは押すたびに消え、
+            組み立て中の形として蓄積されます）。最後に「マスクを作成」を押すと、
+            蓄積したすべての形が1つのマスクになります。「組み立てをやり直す」で
+            蓄積を破棄できます。
+            <b>形で絞り込む</b>: 「形を足す/引く」とは逆に、組み立て中の範囲と
+            いま作った形の<b>共通部分だけ</b>を残します（Lightroomにはない操作）。
+            例: 円形を足したあと輝度範囲で絞り込むと、円の中でかつ明るい部分だけが残ります。
+          </p>
+        </div>
+      </div>
+
+      <sp-button
+        id="readMgDiag"
+        variant="secondary"
+        title="選択中の調整レイヤーの内部設定を読み出します（開発診断用）"
+      >診断: 選択レイヤーの設定を読む</sp-button>
+      <sp-button
+        id="mgPrefDiag"
+        variant="secondary"
+        title="自由変形の「縦横比を固定」がどの設定で制御されているかを調べます（開発診断用）。押す→Photoshopの環境設定＞一般で「レガシー自由変形」を手で切り替える→もう一度押す、で変化したキーが分かります"
+      >診断: 変形の設定を読む</sp-button>
+
+      <p id="mgDiag" class="diag hidden"></p>
+    </div>
+
+    <script src="js/main.js"></script>
+  </body>
+</html>
