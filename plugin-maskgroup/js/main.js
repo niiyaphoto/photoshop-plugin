@@ -22,6 +22,10 @@ const circleLogic = requireLocal([ "./logic/circle.js", "./js/logic/circle.js" ]
 
 const lineargeom = requireLocal([ "./logic/lineargeom.js", "./js/logic/lineargeom.js" ]);
 
+const maskparts = requireLocal([ "./logic/maskparts.js", "./js/logic/maskparts.js" ]);
+
+const {createOperationQueue: createOperationQueue} = requireLocal([ "./logic/queue.js", "./js/logic/queue.js" ]);
+
 function byId(id) {
   return document.getElementById(id);
 }
@@ -61,15 +65,66 @@ function setStatus(message, tone = "info") {
   status.className = `status ${tone}`;
 }
 
+function applyPartControlValues(part, setValueFn, setKindFn) {
+  if (!part) {
+    return;
+  }
+  setKindFn(part.kind === "legacy" ? "selection" : part.kind);
+  if (part.kind === "circle") {
+    setValueFn("mgCircleSize", part.params.sizePercent);
+    setValueFn("mgCircleRatio", part.params.ratio);
+    setValueFn("mgCircleAngle", part.params.angle);
+    setValueFn("mgCircleFeather", part.params.featherPx);
+    setValueFn("mgCircleSoftness", part.params.softness);
+    setValueFn("mgCircleX", part.params.xPercent);
+    setValueFn("mgCircleY", part.params.yPercent);
+  } else if (part.kind === "linear") {
+    setValueFn("mgLinearAngle", part.params.angle);
+    setValueFn("mgLinearWidth", part.params.widthPercent);
+    setValueFn("mgLinearX", part.params.xPercent);
+    setValueFn("mgLinearY", part.params.yPercent);
+  } else if (part.kind === "luminosity") {
+    setValueFn("mgLumLevel", part.params.lumLevel);
+  } else if (part.kind === "saturation") {
+    setValueFn("mgSatLevel", part.params.satLevel);
+  }
+  if (part.params.feather != null) {
+    setValueFn("mgFeather", part.params.feather);
+  }
+}
+
+function clearNearbyError() {
+  if (typeof document === "undefined" || !document.querySelectorAll) {
+    return;
+  }
+  for (const element of Array.from(document.querySelectorAll(".nearby-status"))) {
+    if (element.parentNode) {
+      element.parentNode.removeChild(element);
+    }
+  }
+}
+
+function showNearbyError(anchor, message) {
+  setStatus(message, "error");
+  clearNearbyError();
+  if (!anchor || !anchor.parentNode || typeof document === "undefined") {
+    return;
+  }
+  const nearby = document.createElement("p");
+  nearby.className = "status error nearby-status";
+  nearby.textContent = message;
+  anchor.parentNode.insertBefore(nearby, anchor.nextSibling);
+}
+
 function errorMessage(error) {
   if (!error) {
     return "処理に失敗しました";
   }
   if (typeof error === "string") {
-    return error.replace(/^(UserMessageError|Error):\s*/, "");
+    return error.replace(/^(ExternalChangeError|UserMessageError|Error):\s*/, "");
   }
   if (error.message) {
-    return String(error.message).replace(/^(UserMessageError|Error):\s*/, "");
+    return String(error.message).replace(/^(ExternalChangeError|UserMessageError|Error):\s*/, "");
   }
   try {
     const json = JSON.stringify(error);
@@ -81,34 +136,77 @@ function errorMessage(error) {
   return text === "[object Object]" ? "処理に失敗しました" : text;
 }
 
+async function prepareStartupMaskDraft({rememberActiveHistoryState: rememberActiveHistoryState, cleanupMaskDraft: cleanupMaskDraft}) {
+  rememberActiveHistoryState();
+  return cleanupMaskDraft();
+}
+
 let startupTask = null;
 
-async function runAction(button, action, successMessage, failurePrefix) {
-  if (button) {
-    button.disabled = true;
+let captureOperationSnapshot = () => ({});
+
+let validateOperationSnapshot = async () => true;
+
+function setPanelBusy(busy) {
+  panelBusy = !!busy;
+  if (typeof document === "undefined") {
+    return;
   }
-  setStatus("処理中です...", "info");
-  try {
-    if (startupTask) {
-      await startupTask.catch(() => {});
-    }
-    await action();
-    if (successMessage) {
-      setStatus(successMessage, "success");
-    }
-  } catch (error) {
-    const reason = errorMessage(error);
-    const restoreNote = error && error.restoreFailedCount > 0 ? "※一部の補助レイヤーの表示を戻せませんでした。Photoshopのレイヤーパネルで確認してください" : "";
-    const message = failurePrefix ? `${failurePrefix}: ${reason}` : reason;
-    setStatus(restoreNote ? `${message} ${restoreNote}` : message, "error");
-  } finally {
-    if (button) {
-      button.disabled = false;
-    }
+  for (const element of Array.from(document.querySelectorAll("sp-button, sp-action-button, sp-slider, sp-radio-group"))) {
+    element.disabled = !!busy;
+  }
+  const panel = document.querySelector(".panel");
+  if (panel) {
+    panel.classList.toggle("busy", !!busy);
   }
 }
 
-function throttleTrailing(fn, waitMs) {
+let panelBusy = false;
+
+const operationQueue = createOperationQueue({
+  onBusyChange: setPanelBusy
+});
+
+function enqueuePanelOperation(operation, snapshot, button) {
+  const captured = snapshot || captureOperationSnapshot();
+  return operationQueue.enqueue(captured, validateOperationSnapshot, async frozenSnapshot => {
+    if (startupTask) {
+      await startupTask.catch(() => {});
+    }
+    return operation(frozenSnapshot);
+  }).catch(error => {
+    showNearbyError(button, errorMessage(error));
+    return undefined;
+  });
+}
+
+async function runAction(button, action, successMessage, failurePrefix) {
+  clearNearbyError();
+  const snapshot = captureOperationSnapshot();
+  return enqueuePanelOperation(async frozenSnapshot => {
+    setStatus("処理中です...", "info");
+    try {
+      await action(frozenSnapshot);
+      if (successMessage) {
+        setStatus(successMessage, "success");
+      }
+    } catch (error) {
+      if (error && error.code === "EXTERNAL_CHANGE") {
+        try {
+          await refreshGroups();
+        } catch (_) {}
+        showNearbyError(button, "Photoshop側の変更（取り消しなど）を反映しました。もう一度操作してください");
+        return;
+      }
+      const reason = errorMessage(error);
+      const restoreNote = error && error.restoreFailedCount > 0 ? "※一部の補助レイヤーの表示を戻せませんでした。Photoshopのレイヤーパネルで確認してください" : "";
+      const message = failurePrefix ? `${failurePrefix}: ${reason}` : reason;
+      showNearbyError(button, restoreNote ? `${message} ${restoreNote}` : message);
+    }
+  }, snapshot, button);
+}
+
+function throttleTrailing(fn, waitMs, anchor) {
   let timer = null;
   let pendingArgs = null;
   let running = false;
@@ -121,7 +219,8 @@ function throttleTrailing(fn, waitMs) {
     pendingArgs = null;
     running = true;
     try {
-      await fn(...args);
+      const dynamicAnchor = anchor || args[0] && args[0].anchor || args[3] || null;
+      await enqueuePanelOperation(() => fn(...args), undefined, dynamicAnchor);
     } finally {
       running = false;
       if (pendingArgs && !timer) {
@@ -175,9 +274,6 @@ function bindHintToggles() {
     if (hint.id === "mgBuildState") {
       continue;
     }
-    if (hint.parentElement && hint.parentElement.id === "section-help") {
-      continue;
-    }
     let insideEditBox = false;
     let node = hint.parentElement;
     while (node) {
@@ -219,8 +315,19 @@ const LINEAR_DEFAULTS = {
   mgLinearY: 50
 };
 
+async function executeShapeSnapshot(snapshot, selected, dependencies) {
+  if (selected) {
+    return dependencies.persistSelectedShapePart(snapshot);
+  }
+  return snapshot.kind === "circle" ? dependencies.reshapeDraftCircle(snapshot.params, snapshot.docId) : dependencies.reshapeDraftLinear(snapshot.params, snapshot.docId);
+}
+
 function bind() {
   let activeGroup = null;
+  let editableState = maskparts.createState({
+    legacy: true
+  });
+  let suppressShapeInput = false;
   let circleDraftGen = 0;
   function currentCircleParams() {
     return {
@@ -283,6 +390,12 @@ function bind() {
   }
   function setActiveGroup(next) {
     activeGroup = next && next.groupId != null ? next : null;
+    if (!activeGroup) {
+      editableState = maskparts.createState({
+        legacy: true
+      });
+      renderEditableParts();
+    }
     const label = byId("mgActive");
     if (label) {
       label.textContent = activeGroup ? `編集対象: ${activeGroup.groupName}` : "編集対象: —";
@@ -311,6 +424,201 @@ function bind() {
       }
     }
   }
+  const PART_KIND_LABELS = {
+    brush: "ブラシ",
+    linear: "線形グラデ",
+    circle: "円形",
+    selection: "選択範囲",
+    luminosity: "輝度範囲",
+    saturation: "彩度範囲",
+    all: "全体",
+    legacy: "旧形式の範囲"
+  };
+  const PART_MODE_LABELS = {
+    add: "追加",
+    subtract: "減算",
+    intersect: "絞り込み"
+  };
+  function syncPartControls(part) {
+    if (!part) {
+      return;
+    }
+    suppressShapeInput = true;
+    try {
+      applyPartControlValues(part, setValue, kind => {
+        selectedKind = kind;
+      });
+      circleDraftAlive = false;
+      linearDraftAlive = false;
+      highlightKind();
+      renderPreviewRings(currentPreviewParams());
+    } finally {
+      suppressShapeInput = false;
+    }
+  }
+  function clearPartControls() {
+    suppressShapeInput = true;
+    try {
+      selectedKind = "selection";
+      circleDraftAlive = false;
+      linearDraftAlive = false;
+      highlightKind();
+      renderPreviewRings(currentPreviewParams());
+    } finally {
+      suppressShapeInput = false;
+    }
+  }
+  async function restorePartControls(part) {
+    if (!part) {
+      return;
+    }
+    syncPartControls(part);
+    suppressShapeInput = true;
+    try {
+      circleDraftAlive = false;
+      linearDraftAlive = false;
+      if (part.kind === "circle") {
+        const result = await maskgroup.startCircleDraft(currentCircleParams(), activeGroup && activeGroup.docId);
+        if (result && result.skipped) {
+          throw new Error("ドキュメントが切り替わったため、部品の編集を開始しませんでした");
+        }
+        circleDraftAlive = true;
+      } else if (part.kind === "linear") {
+        const result = await maskgroup.startLinearDraft(currentLinearParams(), activeGroup && activeGroup.docId);
+        if (result && result.skipped) {
+          throw new Error("ドキュメントが切り替わったため、部品の編集を開始しませんでした");
+        }
+        linearDraftAlive = true;
+      } else {
+        await maskgroup.cleanupMaskDraft().catch(() => {});
+      }
+      renderPreviewRings(currentPreviewParams());
+      if ((part.kind === "circle" || part.kind === "linear") && byId("mgPreviewTest")) {
+        setTimeout(() => byId("mgPreviewTest").click(), 0);
+      }
+    } finally {
+      suppressShapeInput = false;
+    }
+  }
+  function renderEditableParts() {
+    const list = byId("mgParts");
+    const stateLabel = byId("mgPartsState");
+    if (!list || !stateLabel) {
+      return;
+    }
+    list.innerHTML = "";
+    if (!activeGroup) {
+      stateLabel.textContent = "マスクを選ぶと部品が表示されます。";
+      return;
+    }
+    if (editableState.legacy || editableState.parts.length === 0) {
+      stateLabel.textContent = "互換モード: この旧形式マスクには元の部品情報がありません。追加・減算・絞り込みはできますが、過去の部品は個別編集できません。";
+      return;
+    }
+    const recoveryWarning = activeGroup && activeGroup.model && activeGroup.model.recoveryError ? ` ※破損した部品を除外しました: ${activeGroup.model.recoveryError}` : "";
+    stateLabel.textContent = "部品を選ぶと写真上のハンドルとスライダーへ戻せます。変更時は部品列からマスク全体を再合成します。" + recoveryWarning;
+    editableState.parts.forEach((part, index) => {
+      const item = document.createElement("sp-action-button");
+      const selected = editableState.selectedPartId === part.id;
+      item.textContent = `${selected ? "✓ " : ""}${index + 1}. ${PART_KIND_LABELS[part.kind] || part.kind}（${PART_MODE_LABELS[part.mode] || part.mode}）${part.storageMissing ? "（保存画像が見つかりません）" : ""}`;
+      item.classList.toggle("active", selected);
+      item.setAttribute("data-part-id", part.id);
+      item.addEventListener("click", () => runAction(item, async () => {
+        const selected = maskparts.selectPart(editableState, part.id);
+        if (selected.error) {
+          throw new Error(selected.error);
+        }
+        editableState = selected.state;
+        await restorePartControls(part);
+        renderEditableParts();
+        setStatus(`部品 ${index + 1} を編集対象にしました`, "success");
+      }));
+      list.appendChild(item);
+    });
+  }
+  function loadEditableState(group, docId, selectedPartIdOverride) {
+    const parts = modelParts(group);
+    const preferred = parts.find(part => part.kind === "circle" || part.kind === "linear") || parts[0] || null;
+    const model = group && group.model;
+    const selectedPart = arguments.length >= 3 ? parts.find(part => part.id === selectedPartIdOverride) || null : preferred;
+    editableState = maskparts.createState({
+      docId: docId,
+      groupId: group && group.id,
+      parts: parts,
+      selectedPartId: selectedPart && selectedPart.id,
+      legacy: !model || model.legacy
+    });
+    renderEditableParts();
+    return selectedPart;
+  }
+  function modelParts(group) {
+    const model = group && group.model;
+    return model && model.editable && Array.isArray(model.parts) ? model.parts : [];
+  }
+  function editableTargetFromSnapshot(snapshot) {
+    if (!snapshot || !snapshot.targetGroup) {
+      throw new Error("編集するマスクを一覧から選んでください");
+    }
+    if (snapshot.stateVersion !== editableState.version) {
+      throw new Error("部品の状態が変わったため、操作を実行しませんでした");
+    }
+    if (!snapshot.selectedPartId) {
+      throw new Error("編集する部品を一覧から選んでください");
+    }
+    return snapshot.targetGroup;
+  }
+  async function commitEditableMutation(snapshot, mutation, message, cleanupDraft) {
+    const target = editableTargetFromSnapshot(snapshot);
+    if (mutation.error) {
+      throw new Error(mutation.error);
+    }
+    if (mutation.state.parts.length === 0) {
+      throw new Error("最後の部品は削除できません。マスク全体を消す場合は一覧の削除を使ってください");
+    }
+    if (mutation.removed && Array.isArray(mutation.removed) && mutation.removed.length > 0) {
+      message = `保存画像が見つからない部品 ${mutation.removed.length} 件をまとめて外し、残りの部品で作り直しました`;
+    } else if (mutation.state.parts.some(part => part.storageMissing)) {
+      throw new Error("保存画像が見つからない部品は、部品を削除する以外の操作ができません");
+    }
+    mutation.state = {
+      ...mutation.state,
+      parts: mutation.state.parts.map(({storageMissing: storageMissing, ...part}) => part)
+    };
+    const result = await maskgroup.commitEditableParts(target.groupId, mutation.state.parts, target.docId, {
+      cleanupDraft: !!cleanupDraft
+    });
+    editableState = maskparts.createState({
+      ...mutation.state,
+      docId: target.docId,
+      groupId: target.groupId,
+      parts: result.parts
+    });
+    renderEditableParts();
+    const promotedNote = mutation.promoted ? ` 「${PART_KIND_LABELS[mutation.promoted.kind] || mutation.promoted.kind}」は先頭になったため「${mutation.promoted.fromMode === "subtract" ? "減算" : "絞り込み"}」→「追加」に変えました` : "";
+    setStatus(message + promotedNote + (result.warning ? ` ※${result.warning}` : ""), result.warning ? "error" : "success");
+  }
+  function bindEditableMutation(buttonId, mutate, message, cleanupDraft = buttonId === "mgPartDelete") {
+    const button = byId(buttonId);
+    if (!button) {
+      return;
+    }
+    button.addEventListener("click", () => runAction(button, snapshot => commitEditableMutation(snapshot, mutate(snapshot), message, cleanupDraft), null, "部品を更新できませんでした"));
+  }
+  bindEditableMutation("mgPartUp", snapshot => {
+    const index = editableState.parts.findIndex(part => part.id === snapshot.selectedPartId);
+    return maskparts.movePart(editableState, snapshot.selectedPartId, index - 1);
+  }, "部品を1つ上へ移動して再合成しました");
+  bindEditableMutation("mgPartDown", snapshot => {
+    const index = editableState.parts.findIndex(part => part.id === snapshot.selectedPartId);
+    return maskparts.movePart(editableState, snapshot.selectedPartId, index + 1);
+  }, "部品を1つ下へ移動して再合成しました");
+  bindEditableMutation("mgPartDelete", snapshot => {
+    const selected = editableState.parts.find(part => part.id === snapshot.selectedPartId);
+    return selected && selected.storageMissing ? maskparts.removeMissingParts(editableState) : maskparts.removePart(editableState, snapshot.selectedPartId);
+  }, "選択中の部品を削除して再合成しました");
+  bindEditableMutation("mgPartModeAdd", snapshot => maskparts.setMode(editableState, snapshot.selectedPartId, "add"), "選択中の部品を「追加」に変更して再合成しました");
+  bindEditableMutation("mgPartModeSubtract", snapshot => maskparts.setMode(editableState, snapshot.selectedPartId, "subtract"), "選択中の部品を「減算」に変更して再合成しました");
+  bindEditableMutation("mgPartModeIntersect", snapshot => maskparts.setMode(editableState, snapshot.selectedPartId, "intersect"), "選択中の部品を「絞り込み」に変更して再合成しました");
   function renderGroupList(groups, listDocId) {
     const list = byId("mgList");
     if (!list) {
@@ -335,8 +643,13 @@ function bind() {
         setActiveGroup({
           groupId: group.id,
           groupName: group.name,
-          docId: listDocId
+          docId: listDocId,
+          model: group.model
         });
+        const preferredPart = loadEditableState(group, listDocId);
+        if (preferredPart) {
+          await restorePartControls(preferredPart);
+        }
         const warnings = await loadGroupState();
         await loadMixerSliders().catch(() => {});
         statusForGroupStateWarnings(warnings, `「${group.name}」を編集対象にしました`);
@@ -346,6 +659,9 @@ function bind() {
     setActiveGroup(activeGroup);
   }
   async function refreshGroups() {
+    const selectedPartIdBeforeRefresh = editableState.selectedPartId;
+    cancelPendingCircleReshape();
+    cancelPendingLinearReshape();
     const result = await maskgroup.listMaskGroups();
     const groups = result.groups;
     const listDocId = result.docId;
@@ -357,10 +673,37 @@ function bind() {
       setActiveGroup(null);
     }
     renderGroupList(groups, listDocId);
+    if (activeGroup) {
+      const current = groups.find(group => group.id === activeGroup.groupId);
+      if (current) {
+        const knownParts = editableState.parts || [];
+        const listedIds = new Set((current.model.parts || []).map(part => part.id));
+        const missingParts = knownParts.filter(part => part.storageLayerId != null && !listedIds.has(part.id)).map(part => ({
+          ...part,
+          storageMissing: true
+        }));
+        const model = {
+          ...current.model,
+          parts: [ ...current.model.parts || [], ...missingParts ],
+          recoveryError: [ current.model.recoveryError, missingParts.length > 0 ? "保存画像が見つからない部品があります" : null ].filter(Boolean).join(" / ") || null
+        };
+        const currentWithMissing = {
+          ...current,
+          model: model
+        };
+        activeGroup.model = model;
+        const selectedPart = loadEditableState(currentWithMissing, listDocId, selectedPartIdBeforeRefresh);
+        if (selectedPart) {
+          syncPartControls(selectedPart);
+        } else {
+          clearPartControls();
+        }
+      }
+    }
     try {
-      const {exists: exists} = await maskgroup.hasBuildLayer();
-      if (exists && buildShapeCount === 0) {
-        buildShapeCount = 1;
+      const {exists: exists, count: count = 0} = await maskgroup.hasBuildLayer();
+      if (exists && buildShapeCount !== count) {
+        buildShapeCount = count;
         updateBuildStateUi();
       } else if (!exists && buildShapeCount > 0) {
         buildShapeCount = 0;
@@ -369,12 +712,102 @@ function bind() {
     } catch (_) {}
     const warnings = await loadGroupState();
     await loadMixerSliders().catch(() => {});
+    maskgroup.rememberActiveHistoryState();
     return {
       groups: groups,
       warnings: warnings
     };
   }
+  async function handleExternalChange(error, anchor) {
+    if (!error || error.code !== "EXTERNAL_CHANGE") {
+      return false;
+    }
+    await refreshGroups().catch(() => {});
+    showNearbyError(anchor, "Photoshop側の変更（取り消しなど）を反映しました。もう一度操作してください");
+    return true;
+  }
+  const panelElement = document.querySelector(".panel");
+  if (panelElement) {
+    panelElement.addEventListener("pointerenter", () => {
+      if (panelBusy) {
+        return;
+      }
+      operationQueue.enqueue({}, async () => true, async () => {
+        const docId = preview.getActiveDocumentId();
+        if (!maskgroup.hasHistoryChanged(docId)) {
+          return;
+        }
+        await refreshGroups();
+      }).catch(() => {});
+    });
+  }
   let selectedKind = "selection";
+  function currentPartParams(kind = selectedKind) {
+    if (kind === "circle") {
+      return {
+        ...currentCircleParams(),
+        feather: Number(valueOf("mgFeather", 60))
+      };
+    }
+    if (kind === "linear") {
+      return {
+        ...currentLinearParams(),
+        feather: Number(valueOf("mgFeather", 60))
+      };
+    }
+    if (kind === "luminosity") {
+      return {
+        lumTarget: selectedRadioValue("mgLumTarget", "lights"),
+        lumLevel: Number(valueOf("mgLumLevel", 2)),
+        feather: Number(valueOf("mgFeather", 60))
+      };
+    }
+    if (kind === "saturation") {
+      return {
+        satTarget: selectedRadioValue("mgSatTarget", "high"),
+        satLevel: Number(valueOf("mgSatLevel", 2)),
+        feather: Number(valueOf("mgFeather", 60))
+      };
+    }
+    return {
+      feather: Number(valueOf("mgFeather", 60))
+    };
+  }
+  captureOperationSnapshot = () => {
+    let docId = null;
+    try {
+      docId = preview.getActiveDocumentId();
+    } catch (_) {
+      docId = null;
+    }
+    return {
+      docId: docId,
+      targetGroup: activeGroup ? {
+        groupId: activeGroup.groupId,
+        groupName: activeGroup.groupName,
+        docId: activeGroup.docId
+      } : null,
+      kind: selectedKind,
+      params: currentPartParams(selectedKind),
+      selectedPartId: editableState.selectedPartId,
+      stateVersion: editableState.version
+    };
+  };
+  validateOperationSnapshot = async snapshot => {
+    let currentDocId = null;
+    try {
+      currentDocId = preview.getActiveDocumentId();
+    } catch (_) {
+      currentDocId = null;
+    }
+    if (snapshot.docId != null && snapshot.docId !== currentDocId) {
+      return "ドキュメントが切り替わったため、待機中の操作を実行しませんでした";
+    }
+    if (snapshot.targetGroup && snapshot.targetGroup.docId != null && snapshot.targetGroup.docId !== currentDocId) {
+      return "操作対象のドキュメントが一致しません。一覧から選び直してください";
+    }
+    return true;
+  };
   let circleDraftAlive = false;
   let linearDraftAlive = false;
   let buildShapeCount = 0;
@@ -462,29 +895,45 @@ function bind() {
       ...extraOptions
     });
     const effectiveKind = result.effectiveKind || kind;
+    let editableResult;
+    if (effectiveKind === "build") {
+      const finalized = maskparts.finalizeBuild(result.buildParts, {
+        docId: result.docId,
+        groupId: result.groupId
+      });
+      if (finalized.error) {
+        throw new Error(finalized.error);
+      }
+      editableResult = await maskgroup.initializeEditableBuildModel(result.groupId, finalized.state.parts, result.docId);
+    } else {
+      editableResult = await maskgroup.initializeEditableModel(result.groupId, {
+        id: "p1",
+        kind: kind,
+        mode: "add",
+        params: {
+          ...currentPartParams(kind),
+          ...extraOptions
+        }
+      }, result.docId);
+    }
     circleDraftAlive = false;
     linearDraftAlive = false;
     buildShapeCount = 0;
     updateBuildStateUi();
     await refreshGroups();
     setActiveGroup(result);
+    editableState = maskparts.createState({
+      docId: result.docId,
+      groupId: result.groupId,
+      parts: editableResult.parts
+    });
+    renderEditableParts();
     const warnings = await loadGroupState();
     resetMixerSlidersLocal();
     let overlayNote = "";
-    if (effectiveKind !== "all") {
-      try {
-        const overlayInfo = await maskgroup.setMaskOverlay(result.groupId, true, result.docId);
-        overlayShown = true;
-        overlayOwner = {
-          groupId: result.groupId,
-          docId: result.docId
-        };
-        setRedDisplayState("overlay");
-        overlayNote = overlaySemanticsNote(overlayInfo);
-      } catch (error) {
-        overlayNote = ` ※赤表示は準備できませんでした: ${errorMessage(error)}`;
-      }
-    }
+    overlayShown = false;
+    overlayOwner = null;
+    setRedDisplayState(false);
     const warningNote = warnings.length > 0 ? ` ※一部の値を読み取れませんでした（0として表示）: ${warnings.join("、")}` : "";
     const tone = warningNote ? "error" : overlayNote ? "info" : "success";
     const finalMessage = effectiveKind === "build" ? "組み立てた形でマスクを作成しました" : message;
@@ -501,6 +950,9 @@ function bind() {
       cancelPendingLinearReshape();
       const prevKind = selectedKind;
       selectedKind = button.dataset.kind;
+      const deselected = maskparts.selectPart(editableState, null);
+      editableState = deselected.state;
+      renderEditableParts();
       highlightKind();
       circleDraftAlive = false;
       linearDraftAlive = false;
@@ -513,13 +965,13 @@ function bind() {
           const linearStartParams = currentLinearParams();
           await maskgroup.startLinearDraft(linearStartParams);
           linearDraftAlive = true;
-          setStatus("中央に赤いグラデ（既定の向き・幅）を作りました。画面上の操作はありません。" + "スライダーで向き・幅・位置を決め、「マスクを作成」で確定してください", "info");
+          setStatus("中央に赤いグラデを作りました。写真上のハンドルをドラッグし、" + "スライダーで微調整して「マスクを作成」で確定してください", "info");
         } else if (selectedKind === "circle") {
           resetCircleSlidersLocal();
           const circleStartParams = currentCircleParams();
           const result = await maskgroup.startCircleDraft(circleStartParams);
           circleDraftAlive = true;
-          setStatus("中央に赤い円（効果が最大の範囲）を作りました。画面上の操作はありません。" + "スライダーで大きさ・縦横比・回転・ぼかし・位置を決め、" + "「マスクを作成」で確定してください" + rotationNote(result) + limitedFeatherNote(result) + canvasOutOfBoundsNote(circleStartParams), "info");
+          setStatus("中央に赤い円を作りました。写真上のハンドルをドラッグし、" + "スライダーで大きさ・縦横比・回転・ぼかし・位置を微調整して、" + "「マスクを作成」で確定してください" + rotationNote(result) + limitedFeatherNote(result) + canvasOutOfBoundsNote(circleStartParams), "info");
         } else if (selectedKind === "luminosity") {
           await maskgroup.cleanupMaskDraft().catch(() => {});
           setStatus("明るさの範囲（明部/中間調/暗部）と段階を選んで" + "「マスクを作成」を押してください", "info");
@@ -532,6 +984,9 @@ function bind() {
         } else {
           await maskgroup.cleanupMaskDraft().catch(() => {});
           setStatus("好きな選択ツールで範囲を作り、「マスクを作成」を押してください", "info");
+        }
+        if ((selectedKind === "circle" || selectedKind === "linear") && byId("mgPreviewTest")) {
+          setTimeout(() => byId("mgPreviewTest").click(), 0);
         }
       } catch (error) {
         selectedKind = prevKind;
@@ -565,12 +1020,68 @@ function bind() {
   }
   syncLumLevelRange();
   const CIRCLE_SLIDER_IDS = Object.keys(CIRCLE_DEFAULTS);
-  const pushCircleReshape = throttleTrailing(async () => {
+  function captureShapeEdit(kind, params, anchor) {
+    const operation = captureOperationSnapshot();
+    return {
+      kind: kind,
+      params: {
+        ...params
+      },
+      docId: operation.docId,
+      targetGroup: operation.targetGroup,
+      selectedPartId: operation.selectedPartId,
+      stateVersion: operation.stateVersion,
+      anchor: anchor || null
+    };
+  }
+  function selectedPartForShapeSnapshot(snapshot) {
+    if (!snapshot || !snapshot.targetGroup || !snapshot.selectedPartId || snapshot.stateVersion !== editableState.version) {
+      return null;
+    }
+    const part = editableState.parts.find(item => item.id === snapshot.selectedPartId);
+    return part && part.kind === snapshot.kind ? part : null;
+  }
+  async function persistSelectedShapePart(snapshot) {
+    const part = selectedPartForShapeSnapshot(snapshot);
+    if (!part) {
+      return null;
+    }
+    const updated = maskparts.updateParams(editableState, snapshot.selectedPartId, snapshot.params);
+    if (updated.error) {
+      throw new Error(updated.error);
+    }
+    const result = await maskgroup.reshapeAndRegenerateEditablePart(snapshot.kind, snapshot.params, snapshot.targetGroup.groupId, updated.state.parts, snapshot.selectedPartId, snapshot.targetGroup.docId, snapshot.params.feather);
+    if (result && result.skipped) {
+      return result;
+    }
+    editableState = maskparts.createState({
+      ...updated.state,
+      docId: snapshot.targetGroup.docId,
+      groupId: snapshot.targetGroup.groupId,
+      parts: result.parts,
+      selectedPartId: snapshot.selectedPartId
+    });
+    renderEditableParts();
+    return {
+      ...result,
+      draftResult: result.draftResult
+    };
+  }
+  const pushCircleReshape = throttleTrailing(async shapeSnapshot => {
     const gen = circleDraftGen;
-    const params = currentCircleParams();
-    const expectedDocId = previewDocSize ? previewDocSize.docId : preview.getActiveDocumentId();
+    const snapshot = shapeSnapshot || captureShapeEdit("circle", currentCircleParams());
+    const params = snapshot.params;
+    const expectedDocId = snapshot.docId;
     try {
-      const result = await maskgroup.reshapeDraftCircle(params, expectedDocId);
+      if (snapshot.stateVersion !== editableState.version && snapshot.selectedPartId) {
+        throw new Error("編集対象が変わったため、保留中の円の更新を破棄しました");
+      }
+      const selected = selectedPartForShapeSnapshot(snapshot);
+      const result = await executeShapeSnapshot(snapshot, selected, {
+        persistSelectedShapePart: persistSelectedShapePart,
+        reshapeDraftCircle: maskgroup.reshapeDraftCircle,
+        reshapeDraftLinear: maskgroup.reshapeDraftLinear
+      });
       if (gen !== circleDraftGen) {
         return;
       }
@@ -578,14 +1089,19 @@ function bind() {
         setStatus("ドキュメントが切り替わったため、円の更新を中止しました", "error");
         return;
       }
-      setStatus("円の形を更新しました。決まったら「マスクを作成」へ" + rotationNote(result) + limitedFeatherNote(result) + canvasOutOfBoundsNote(params), result && result.rotationApplied === false ? "error" : "success");
+      const saved = selected ? result : null;
+      const draftResult = selected ? result.draftResult : result;
+      setStatus((saved ? "選択中の円形部品を更新し、マスク全体を再合成しました" : "円の形を更新しました。決まったら「マスクを作成」へ") + rotationNote(draftResult) + limitedFeatherNote(draftResult) + canvasOutOfBoundsNote(params) + (saved && saved.warning ? ` ※${saved.warning}` : ""), draftResult && draftResult.rotationApplied === false ? "error" : saved && saved.warning ? "error" : "success");
     } catch (error) {
       if (gen !== circleDraftGen) {
         return;
       }
-      setStatus(errorMessage(error), "error");
+      if (await handleExternalChange(error, snapshot.anchor)) {
+        return;
+      }
+      showNearbyError(snapshot.anchor, errorMessage(error));
     }
-  }, 350);
+  }, 350, null);
   let cancelPendingCircleReshape = () => {};
   cancelPendingCircleReshape = () => pushCircleReshape.cancel();
   for (const id of CIRCLE_SLIDER_IDS) {
@@ -594,7 +1110,10 @@ function bind() {
       continue;
     }
     const handler = () => {
-      pushCircleReshape();
+      if (suppressShapeInput) {
+        return;
+      }
+      pushCircleReshape(captureShapeEdit("circle", currentCircleParams(), slider));
       scheduleRenderPreviewRings(currentCircleParams());
     };
     slider.addEventListener("input", handler);
@@ -609,12 +1128,21 @@ function bind() {
     });
   }
   const LINEAR_SLIDER_IDS = Object.keys(LINEAR_DEFAULTS);
-  const pushLinearReshape = throttleTrailing(async () => {
+  const pushLinearReshape = throttleTrailing(async shapeSnapshot => {
     const gen = circleDraftGen;
-    const params = currentLinearParams();
-    const expectedDocId = previewDocSize ? previewDocSize.docId : preview.getActiveDocumentId();
+    const snapshot = shapeSnapshot || captureShapeEdit("linear", currentLinearParams());
+    const params = snapshot.params;
+    const expectedDocId = snapshot.docId;
     try {
-      const result = await maskgroup.reshapeDraftLinear(params, expectedDocId);
+      if (snapshot.stateVersion !== editableState.version && snapshot.selectedPartId) {
+        throw new Error("編集対象が変わったため、保留中のグラデ更新を破棄しました");
+      }
+      const selected = selectedPartForShapeSnapshot(snapshot);
+      const result = await executeShapeSnapshot(snapshot, selected, {
+        persistSelectedShapePart: persistSelectedShapePart,
+        reshapeDraftCircle: maskgroup.reshapeDraftCircle,
+        reshapeDraftLinear: maskgroup.reshapeDraftLinear
+      });
       if (gen !== circleDraftGen) {
         return;
       }
@@ -622,14 +1150,18 @@ function bind() {
         setStatus("ドキュメントが切り替わったため、グラデの更新を中止しました", "error");
         return;
       }
-      setStatus("グラデの形を更新しました。決まったら「マスクを作成」へ", "success");
+      const saved = selected ? result : null;
+      setStatus((saved ? "選択中の線形グラデ部品を更新し、マスク全体を再合成しました" : "グラデの形を更新しました。決まったら「マスクを作成」へ") + (saved && saved.warning ? ` ※${saved.warning}` : ""), saved && saved.warning ? "error" : "success");
     } catch (error) {
       if (gen !== circleDraftGen) {
         return;
       }
-      setStatus(errorMessage(error), "error");
+      if (await handleExternalChange(error, snapshot.anchor)) {
+        return;
+      }
+      showNearbyError(snapshot.anchor, errorMessage(error));
     }
-  }, 350);
+  }, 350, null);
   let cancelPendingLinearReshape = () => {};
   cancelPendingLinearReshape = () => pushLinearReshape.cancel();
   for (const id of LINEAR_SLIDER_IDS) {
@@ -638,7 +1170,10 @@ function bind() {
       continue;
     }
     const handler = () => {
-      pushLinearReshape();
+      if (suppressShapeInput) {
+        return;
+      }
+      pushLinearReshape(captureShapeEdit("linear", currentLinearParams(), slider));
       scheduleRenderPreviewRings(currentLinearParams());
     };
     slider.addEventListener("input", handler);
@@ -678,11 +1213,21 @@ function bind() {
       satLevel: Number(valueOf("mgSatLevel", 2))
     } : {};
     await exitSelPreviewIfShown();
-    await maskgroup.addShapeToBuild(selectedKind, mode, valueOf("mgFeather", 60), extraOptions);
+    const buildResult = await maskgroup.addShapeToBuild(selectedKind, mode, valueOf("mgFeather", 60), {
+      ...extraOptions,
+      editablePart: {
+        kind: selectedKind,
+        mode: mode,
+        params: {
+          ...currentPartParams(selectedKind),
+          ...extraOptions
+        }
+      }
+    });
     circleDraftAlive = false;
     linearDraftAlive = false;
     renderPreviewRings(currentPreviewParams());
-    buildShapeCount += 1;
+    buildShapeCount = buildResult && Array.isArray(buildResult.parts) ? buildResult.parts.length : buildShapeCount + 1;
     updateBuildStateUi();
     const kindLabel = KIND_LABELS[selectedKind] || selectedKind;
     const statusMessage = mode === "intersect" ? `「${kindLabel}」で絞り込みました。別の種類で次の形を作るか、` + "「マスクを作成」で確定してください" : `「${kindLabel}」を${mode === "subtract" ? "引きました" : "足しました"}。` + "別の種類で次の形を作るか、「マスクを作成」で確定してください";
@@ -785,7 +1330,7 @@ function bind() {
       setStatus("編集対象が切り替わったため削除を中止しました", "error");
       return;
     }
-    await maskgroup.deleteMaskGroup(target.groupId, target.docId);
+    const deletion = await maskgroup.deleteMaskGroup(target.groupId, target.docId);
     const wasStillTarget = sameActiveGroup(target);
     if (wasStillTarget) {
       setActiveGroup(null);
@@ -801,7 +1346,7 @@ function bind() {
       setStatus(`「${target.groupName}」を削除できませんでした（一覧に残っています）`, "error");
       return;
     }
-    statusForGroupStateWarnings(warnings, `「${target.groupName}」を削除しました（Ctrl+Zで戻せます）`);
+    statusForGroupStateWarnings(deletion && deletion.warning ? [ ...warnings, deletion.warning ] : warnings, `「${target.groupName}」を削除しました（Ctrl+Zで戻せます）`);
   }, null, "削除できませんでした"));
   const editMaskButton = byId("mgEditMask");
   editMaskButton.addEventListener("click", () => runAction(editMaskButton, async () => {
@@ -833,82 +1378,111 @@ function bind() {
     saturation: "彩度範囲",
     all: "全体"
   };
-  async function combineMaskWithSelectedKind(mode) {
-    if (!activeGroup) {
+  async function combineMaskWithSelectedKind(mode, snapshot) {
+    if (!snapshot || !snapshot.targetGroup) {
       setStatus("一覧から編集対象のマスクを選んでください", "error");
       return;
     }
+    const targetGroup = snapshot.targetGroup;
+    const targetKind = snapshot.kind;
     let nowDocId = null;
     try {
       nowDocId = preview.getActiveDocumentId();
     } catch (_) {
       nowDocId = null;
     }
-    if (nowDocId != null && activeGroup.docId != null && nowDocId !== activeGroup.docId) {
+    if (nowDocId == null || targetGroup.docId == null || nowDocId !== targetGroup.docId) {
       setStatus("ドキュメントが切り替わっています。一覧からマスクを選び直してください", "error");
       return;
     }
     let circleRotationNote = "";
     let circleLimitedNote = "";
     let circleCanvasNote = "";
-    if (selectedKind === "circle") {
+    if (targetKind === "circle") {
       circleDraftGen += 1;
       cancelPendingCircleReshape();
-      const circleFinalParams = currentCircleParams();
+      const circleFinalParams = {
+        ...snapshot.params
+      };
       let result;
       try {
-        result = circleDraftAlive ? await maskgroup.reshapeDraftCircle(circleFinalParams) : await maskgroup.startCircleDraft(circleFinalParams);
+        result = circleDraftAlive ? await maskgroup.reshapeDraftCircle(circleFinalParams, targetGroup.docId) : await maskgroup.startCircleDraft(circleFinalParams, targetGroup.docId);
       } catch (error) {
         if (!circleDraftAlive) {
           throw error;
         }
-        result = await maskgroup.startCircleDraft(circleFinalParams);
+        result = await maskgroup.startCircleDraft(circleFinalParams, targetGroup.docId);
+      }
+      if (result && result.skipped) {
+        throw new Error("ドキュメントが切り替わったため、マスクの追加・削除を中止しました");
       }
       circleDraftAlive = true;
       circleRotationNote = rotationNote(result);
       circleLimitedNote = limitedFeatherNote(result);
       circleCanvasNote = canvasOutOfBoundsNote(circleFinalParams);
-    } else if (selectedKind === "linear") {
+    } else if (targetKind === "linear") {
       circleDraftGen += 1;
       cancelPendingLinearReshape();
-      const linearFinalParams = currentLinearParams();
+      const linearFinalParams = {
+        ...snapshot.params
+      };
+      let result;
       try {
         if (linearDraftAlive) {
-          await maskgroup.reshapeDraftLinear(linearFinalParams);
+          result = await maskgroup.reshapeDraftLinear(linearFinalParams, targetGroup.docId);
         } else {
-          await maskgroup.startLinearDraft(linearFinalParams);
+          result = await maskgroup.startLinearDraft(linearFinalParams, targetGroup.docId);
         }
       } catch (error) {
         if (!linearDraftAlive) {
           throw error;
         }
-        await maskgroup.startLinearDraft(linearFinalParams);
+        result = await maskgroup.startLinearDraft(linearFinalParams, targetGroup.docId);
+      }
+      if (result && result.skipped) {
+        throw new Error("ドキュメントが切り替わったため、マスクの追加・削除を中止しました");
       }
       linearDraftAlive = true;
     }
-    const extraOptions = selectedKind === "luminosity" ? {
-      lumTarget: selectedRadioValue("mgLumTarget", "lights"),
-      lumLevel: Number(valueOf("mgLumLevel", 2))
-    } : selectedKind === "saturation" ? {
-      satTarget: selectedRadioValue("mgSatTarget", "high"),
-      satLevel: Number(valueOf("mgSatLevel", 2))
-    } : {};
+    const extraOptions = {
+      ...snapshot.params
+    };
     await exitSelPreviewIfShown();
-    await maskgroup.combineMaskFromDraft(activeGroup.groupId, selectedKind, mode, valueOf("mgFeather", 60), activeGroup.docId, extraOptions);
+    const nextId = `p${editableState.legacy || editableState.parts.length === 0 ? Math.max(2, editableState.nextId + 1) : editableState.nextId}`;
+    const result = await maskgroup.appendEditablePart(targetGroup.groupId, {
+      id: nextId,
+      kind: targetKind,
+      mode: mode,
+      params: {
+        ...snapshot.params
+      }
+    }, targetGroup.docId, snapshot.params.feather, extraOptions);
+    editableState = maskparts.createState({
+      docId: targetGroup.docId,
+      groupId: targetGroup.groupId,
+      parts: result.parts,
+      selectedPartId: nextId,
+      nextId: Number(nextId.slice(1)) + 1
+    });
+    renderEditableParts();
     circleDraftAlive = false;
     linearDraftAlive = false;
     renderPreviewRings(currentPreviewParams());
-    const kindLabel = KIND_LABELS[selectedKind] || selectedKind;
+    const kindLabel = KIND_LABELS[targetKind] || targetKind;
     const message = mode === "subtract" ? `マスクから「${kindLabel}」を削除しました` : `マスクに「${kindLabel}」を追加しました`;
-    setStatus(message + circleRotationNote + circleLimitedNote + circleCanvasNote, "success");
+    setStatus(message + circleRotationNote + circleLimitedNote + circleCanvasNote + (result.warning ? ` ※${result.warning}` : ""), result.warning ? "error" : "success");
   }
   const maskAddButton = byId("mgMaskAdd");
   if (maskAddButton) {
-    maskAddButton.addEventListener("click", () => runAction(maskAddButton, () => combineMaskWithSelectedKind("add"), null, "マスクに追加できませんでした"));
+    maskAddButton.addEventListener("click", () => runAction(maskAddButton, snapshot => combineMaskWithSelectedKind("add", snapshot), null, "マスクに追加できませんでした"));
   }
   const maskSubtractButton = byId("mgMaskSubtract");
   if (maskSubtractButton) {
-    maskSubtractButton.addEventListener("click", () => runAction(maskSubtractButton, () => combineMaskWithSelectedKind("subtract"), null, "マスクから削除できませんでした"));
+    maskSubtractButton.addEventListener("click", () => runAction(maskSubtractButton, snapshot => combineMaskWithSelectedKind("subtract", snapshot), null, "マスクから削除できませんでした"));
+  }
+  const maskIntersectButton = byId("mgMaskIntersect");
+  if (maskIntersectButton) {
+    maskIntersectButton.addEventListener("click", () => runAction(maskIntersectButton, snapshot => combineMaskWithSelectedKind("intersect", snapshot), null, "マスクを絞り込めませんでした"));
   }
   const fxOrtonButton = byId("mgFxOrton");
   if (fxOrtonButton) {
@@ -944,6 +1518,17 @@ function bind() {
     await maskgroup.transformMask(activeGroup.groupId, activeGroup.docId);
     setStatus("変形モードです。画像上でドラッグして移動・拡大し、Enterで確定してください（Escで取消）", "success");
   }, null, "変形を開始できませんでした"));
+  const redoGradientButton = byId("mgRedoGradient");
+  if (redoGradientButton) {
+    redoGradientButton.addEventListener("click", () => runAction(redoGradientButton, async snapshot => {
+      if (!snapshot.targetGroup) {
+        throw new Error("対象のマスクグループを一覧から選んでください");
+      }
+      await hideOverlayIfShown();
+      await maskgroup.editMaskWithGradient(snapshot.targetGroup.groupId, snapshot.targetGroup.docId);
+      setStatus("グラデーションツールを準備しました。Photoshopの画像上でドラッグして引き直してください", "success");
+    }, null, "グラデを引き直す準備ができませんでした"));
+  }
   async function hideOverlayIfShown() {
     const shouldClearUnifiedState = selPreviewShown === "overlay";
     if (overlayShown && overlayOwner) {
@@ -1109,9 +1694,12 @@ function bind() {
           updateParamButtons();
         }
       } catch (error) {
-        setStatus(errorMessage(error), "error");
+        if (await handleExternalChange(error, slider)) {
+          return;
+        }
+        showNearbyError(slider, errorMessage(error));
       }
-    }, 350);
+    }, 350, slider);
     paramPush[kind] = push;
     const handler = () => {
       if (!activeGroup) {
@@ -1267,9 +1855,12 @@ function bind() {
         await maskgroup.setMaskFeather(targetGroup.groupId, value, targetGroup.docId);
         setStatus(`${targetGroup.groupName} の境界のぼかしを ${Math.round(value)}px にしました`, "success");
       } catch (error) {
-        setStatus(errorMessage(error), "error");
+        if (await handleExternalChange(error, maskFeatherSlider)) {
+          return;
+        }
+        showNearbyError(maskFeatherSlider, errorMessage(error));
       }
-    }, 350);
+    }, 350, maskFeatherSlider);
     const featherHandler = () => {
       if (!activeGroup) {
         setStatus("編集対象がありません。マスクを作成するか、一覧から選んでください", "error");
@@ -1288,7 +1879,7 @@ function bind() {
       pushFeather(activeGroup, 0);
     });
   }
-  const pushMixer = throttleTrailing(async (targetGroup, rangeKey, values) => {
+  const pushMixer = throttleTrailing(async (targetGroup, rangeKey, values, slider) => {
     try {
       if (!targetGroup) {
         setStatus("編集対象がありません。マスクを作成するか、一覧から選んでください", "error");
@@ -1298,7 +1889,10 @@ function bind() {
       await maskgroup.applyMixerRange(targetGroup.groupId, rangeKey, values, targetGroup.docId);
       setStatus(`${targetGroup.groupName} の${MIX_RANGE_LABELS[rangeKey]}系を調整しました`, "success");
     } catch (error) {
-      setStatus(errorMessage(error), "error");
+      if (await handleExternalChange(error, slider)) {
+        return;
+      }
+      showNearbyError(slider, errorMessage(error));
     }
   }, 400);
   for (const sliderId of [ "mgMixHue", "mgMixSat", "mgMixLum" ]) {
@@ -1311,7 +1905,7 @@ function bind() {
           docId: activeGroup.docId
         } : null;
         const rangeKey = selectedRadioValue("mgMixRange", "reds");
-        pushMixer(targetGroup, rangeKey, currentMixValues());
+        pushMixer(targetGroup, rangeKey, currentMixValues(), slider);
       };
       slider.addEventListener("input", handler);
       slider.addEventListener("change", handler);
@@ -1324,30 +1918,6 @@ function bind() {
         setStatus("初期値に戻します", "info");
       });
     }
-  }
-  const diagButton = byId("readMgDiag");
-  if (diagButton) {
-    diagButton.addEventListener("click", () => runAction(diagButton, async () => {
-      const info = await maskgroup.readActiveLayerAdjustment();
-      const box = byId("mgDiag");
-      if (box) {
-        box.textContent = info;
-        box.classList.remove("hidden");
-      }
-      setStatus("内部設定を表示しました。この内容を開発に共有してください", "success");
-    }, null, "診断できませんでした"));
-  }
-  const prefDiagButton = byId("mgPrefDiag");
-  if (prefDiagButton) {
-    prefDiagButton.addEventListener("click", () => runAction(prefDiagButton, async () => {
-      const info = await maskgroup.diagnoseTransformPreferences();
-      const box = byId("mgDiag");
-      if (box) {
-        box.textContent = info;
-        box.classList.remove("hidden");
-      }
-      setStatus("変形の設定を読み出しました。この内容を開発に共有してください", "success");
-    }, null, "診断できませんでした"));
   }
   const mgPreviewWrap = byId("mgPreviewWrap");
   const mgPreviewImg = byId("mgPreviewImg");
@@ -1700,9 +2270,9 @@ function bind() {
         return;
       }
       if (finishedKind === "linear") {
-        pushLinearReshape();
+        pushLinearReshape(captureShapeEdit("linear", currentLinearParams()));
       } else {
-        pushCircleReshape();
+        pushCircleReshape(captureShapeEdit("circle", currentCircleParams()));
       }
     }
     function clampPercent(value) {
@@ -1889,7 +2459,10 @@ function bind() {
   updateBuildStateUi();
   startupTask = (async () => {
     try {
-      await maskgroup.cleanupMaskDraft();
+      await prepareStartupMaskDraft({
+        rememberActiveHistoryState: maskgroup.rememberActiveHistoryState,
+        cleanupMaskDraft: maskgroup.cleanupMaskDraft
+      });
     } catch (error) {
       let hasDoc = false;
       try {
@@ -1898,7 +2471,11 @@ function bind() {
         hasDoc = false;
       }
       if (hasDoc) {
-        setStatus(`前回の下書きを片付けられませんでした: ${errorMessage(error)}` + "（レイヤーパネルで「マスクの下書き」を手で削除できます）", "error");
+        if (error && error.code === "EXTERNAL_CHANGE") {
+          setStatus("Photoshop側の変更（取り消しなど）を反映しました。もう一度操作してください", "error");
+        } else {
+          setStatus(`前回の下書きを片付けられませんでした: ${errorMessage(error)}` + "（レイヤーパネルで「マスクの下書き」を手で削除できます）", "error");
+        }
       }
     }
     try {
@@ -1909,7 +2486,7 @@ function bind() {
     try {
       const result = await maskgroup.hasBuildLayer();
       if (result && result.exists) {
-        buildShapeCount = 1;
+        buildShapeCount = result.count || 1;
         updateBuildStateUi();
         setStatus("前回の組み立てが残っています。この状態で「マスクを作成」を押すと、" + "いま選んでいる種類ではなく前回の組み立てが確定します。" + "使わないなら「組み立てをやり直す」で破棄してください", "info");
       }

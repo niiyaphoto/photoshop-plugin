@@ -74,26 +74,6 @@ h1 {
   display: none;
 }
 
-.lut-list {
-  max-height: 220px;
-  overflow-y: auto;
-  margin-bottom: 10px;
-  border: 1px solid #3a3a3a;
-  border-radius: 6px;
-  padding: 4px;
-}
-
-.lut-list sp-action-button {
-  display: block;
-  width: 100%;
-  margin-bottom: 2px;
-}
-
-.lut-list .empty {
-  margin: 4px;
-  color: #9a9a9a;
-}
-
 .diag {
   margin: 0 0 10px;
   padding: 8px;
@@ -119,6 +99,19 @@ h1 {
   margin-bottom: 0;
   border: 2px solid transparent;
   border-radius: 6px;
+}
+
+.grid.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.grid.three sp-button {
+  width: 100%;
+  min-width: 0;
+}
+
+.panel.busy {
+  cursor: progress;
 }
 
 .grid.two sp-button.kind-active {
@@ -186,6 +179,12 @@ h1 {
 
 .status.error {
   color: #ff7373;
+}
+
+.nearby-status {
+  margin: 0 0 10px;
+  padding-bottom: 4px;
+  border-bottom: 0;
 }
 
 .status.success {

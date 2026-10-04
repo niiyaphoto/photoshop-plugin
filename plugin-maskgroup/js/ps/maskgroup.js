@@ -1,6 +1,15 @@
 "use strict";
 
-const {UserMessageError: UserMessageError, batchPlay: batchPlay, clampNumber: clampNumber, findLayerById: findLayerById, getActiveDocument: getActiveDocument, moveActiveLayerToTop: moveActiveLayerToTop, runModal: runModal, selectLayerById: selectLayerById, selectTopmostLayer: selectTopmostLayer, setCurrentLayerProperties: setCurrentLayerProperties, setLayerPropsById: setLayerPropsById, makeCurvesAdjustmentLayer: makeCurvesAdjustmentLayer, setActiveCurvesAdjustment: setActiveCurvesAdjustment} = require("./helpers.js");
+const {UserMessageError: UserMessageError, batchPlay: batchPlay, clampNumber: clampNumber, findLayerById: findLayerById, getActiveDocument: getActiveDocument, getHistoryStateId: getHistoryStateId, getRememberedHistoryState: getRememberedHistoryState, rememberActiveHistoryState: rememberActiveHistoryState, moveActiveLayerToTop: moveActiveLayerToTop, runModal: runModal, selectLayerById: selectLayerById, selectTopmostLayer: selectTopmostLayer, setCurrentLayerProperties: setCurrentLayerProperties, setLayerPropsById: setLayerPropsById, makeCurvesAdjustmentLayer: makeCurvesAdjustmentLayer, setActiveCurvesAdjustment: setActiveCurvesAdjustment} = require("./helpers.js");
+
+function hasHistoryChanged(expectedDocId) {
+  const doc = getActiveDocument();
+  if (!doc || expectedDocId != null && doc.id !== expectedDocId) {
+    return true;
+  }
+  const remembered = getRememberedHistoryState(doc);
+  return remembered !== undefined && getHistoryStateId(doc) !== remembered;
+}
 
 const {computeCircleGeometry: computeCircleGeometry, computeSelectionBounds: computeSelectionBounds, splitFeather: splitFeather, isRotationEffective: isRotationEffective} = require("../logic/circle.js");
 
@@ -11,6 +20,16 @@ const {FROM_DESCRIPTOR: FROM_DESCRIPTOR} = require("../logic/adjustvalues.js");
 const {defaultBlurRadius: defaultBlurRadius} = require("../logic/orton.js");
 
 const GROUP_PREFIX = "マスクグループ";
+
+const EDITABLE_PART_PREFIX = "__LRMG_PART__";
+
+const EDITABLE_PART_MARKER = "｜編集設定｜";
+
+const BUILD_PART_MARKER = "｜組み立て設定｜";
+
+const EDITABLE_BACKUP_CHANNEL = "Lrマスク 再合成バックアップ（自動生成）";
+
+const EDITABLE_INTERSECT_CHANNEL = "Lrマスク AND一時選択（自動生成）";
 
 async function step(label, fn) {
   try {
@@ -248,6 +267,109 @@ function nextGroupName(doc) {
   return `${GROUP_PREFIX} ${max + 1}`;
 }
 
+const EDITABLE_KIND_LABELS = {
+  brush: "ブラシ",
+  linear: "線形グラデ",
+  circle: "円形",
+  selection: "選択範囲",
+  luminosity: "輝度範囲",
+  saturation: "彩度範囲",
+  all: "全体",
+  legacy: "旧形式の範囲"
+};
+
+const EDITABLE_MODE_LABELS = {
+  add: "追加",
+  subtract: "減算",
+  intersect: "絞り込み"
+};
+
+function editablePartLayerName(part, order, marker = EDITABLE_PART_MARKER) {
+  const payload = {
+    schema: 1,
+    id: String(part.id),
+    kind: String(part.kind),
+    mode: String(part.mode),
+    params: part.params && typeof part.params === "object" ? part.params : {},
+    order: Number(order)
+  };
+  const kindLabel = EDITABLE_KIND_LABELS[part.kind] || String(part.kind);
+  const modeLabel = EDITABLE_MODE_LABELS[part.mode] || String(part.mode);
+  return `部品${Number(order) + 1} ${kindLabel}` + `（${modeLabel}・自動生成・消さないでください）` + marker + JSON.stringify(payload);
+}
+
+function parseEditablePartPayload(name, marker, allowLegacyPrefix) {
+  if (allowLegacyPrefix && name.indexOf(EDITABLE_PART_PREFIX) === 0) {
+    return JSON.parse(decodeURIComponent(name.slice(EDITABLE_PART_PREFIX.length)));
+  }
+  const markerIndex = name.indexOf(marker);
+  if (markerIndex < 0) {
+    return null;
+  }
+  return JSON.parse(name.slice(markerIndex + marker.length));
+}
+
+function readStoredParts(children, marker, allowLegacyPrefix = false) {
+  let parts = [];
+  const recoveryWarnings = [];
+  const ids = new Set;
+  const kinds = [ "brush", "linear", "circle", "selection", "luminosity", "saturation", "all", "legacy" ];
+  for (const layer of children) {
+    const name = String(layer && layer.name || "");
+    try {
+      const payload = parseEditablePartPayload(name, marker, allowLegacyPrefix);
+      if (!payload) {
+        continue;
+      }
+      if (!payload || payload.schema !== 1 || !payload.id || !kinds.includes(payload.kind) || ![ "add", "subtract", "intersect" ].includes(payload.mode)) {
+        throw new Error("部品メタデータの形式が不正です");
+      }
+      if (ids.has(String(payload.id))) {
+        throw new Error(`部品IDが重複しています: ${payload.id}`);
+      }
+      ids.add(String(payload.id));
+      parts.push({
+        id: String(payload.id),
+        kind: String(payload.kind),
+        mode: String(payload.mode),
+        params: payload.params && typeof payload.params === "object" ? {
+          ...payload.params
+        } : {},
+        order: Number(payload.order) || 0,
+        storageLayerId: layer.id
+      });
+    } catch (error) {
+      recoveryWarnings.push(error.message || String(error));
+    }
+  }
+  parts.sort((left, right) => left.order - right.order);
+  if (parts.length > 0 && parts[0].mode !== "add") {
+    const firstAdd = parts.findIndex(part => part.mode === "add");
+    if (firstAdd < 0) {
+      recoveryWarnings.push("復元できる「追加」部品がありません");
+      parts = [];
+    } else {
+      recoveryWarnings.push(`基底が無い先頭の${firstAdd}件を除外しました`);
+      parts = parts.slice(firstAdd);
+    }
+  }
+  const recoveryError = recoveryWarnings.length > 0 ? recoveryWarnings.join(" / ") : null;
+  return {
+    editable: parts.length > 0,
+    legacy: parts.length === 0,
+    recoveryError: recoveryError,
+    parts: parts.map(({order: order, ...part}) => part)
+  };
+}
+
+function readEditableParts(group) {
+  return readStoredParts(Array.from(group && group.layers || []), EDITABLE_PART_MARKER, true);
+}
+
+function readBuildEditableParts(doc) {
+  return readStoredParts(Array.from(doc && doc.layers || []), BUILD_PART_MARKER, false);
+}
+
 async function listMaskGroups() {
   const doc = getActiveDocument();
   if (!doc) {
@@ -260,7 +382,8 @@ async function listMaskGroups() {
     docId: doc.id,
     groups: topLevelMaskGroups(doc).map(group => ({
       id: group.id,
-      name: String(group.name)
+      name: String(group.name),
+      model: readEditableParts(group)
     }))
   };
 }
@@ -700,7 +823,7 @@ async function makeAdjustmentLayer(makeType, name) {
       return layerId;
     }
   }
-  throw new UserMessageError(`「${name}」の調整レイヤーを作成できませんでした。` + "この調整はこの環境では作成に失敗します。診断結果を開発に共有してください");
+  throw new UserMessageError(`「${name}」の調整レイヤーを作成できませんでした。` + "この調整はこの環境では作成に失敗します。Photoshopを再起動してから、もう一度お試しください");
 }
 
 async function selectFromShape(doc, kind, feather, options = {}, purpose = "create") {
@@ -810,9 +933,14 @@ async function createMaskGroup(kind, options = {}) {
 async function createMaskGroupBody(doc, kind, feather, options = {}) {
   const name = nextGroupName(doc);
   let effectiveKind = kind;
+  let buildParts = [];
   let draftLayerId = null;
   const build = findLayersByName(doc, BUILD_LAYER_NAME)[0];
   if (build) {
+    buildParts = readBuildEditableParts(doc).parts.map(normalizeEditablePart);
+    if (buildParts.length === 0) {
+      throw new UserMessageError("この組み立てには個別部品の情報がありません。「組み立てをやり直す」で作り直してください");
+    }
     await step("組み立てレイヤーの選択", () => selectLayerById(build.id));
     await step("組み立て範囲の読み込み", () => loadLayerMaskSelection());
     const hasBuild = await step("組み立ての確認", () => hasActiveSelection());
@@ -841,16 +969,14 @@ async function createMaskGroupBody(doc, kind, feather, options = {}) {
     await step(`${spec.layerName}レイヤーの作成`, () => makeAdjustmentLayer(spec.makeType, spec.layerName));
   }
   await step("範囲表示レイヤーの作成", () => makeOverlayLayerInGroup());
-  if (kind === "all") {
-    await step("範囲表示レイヤーを隠す", () => batchPlay([ {
-      _obj: "hide",
-      _target: [ {
-        _ref: "layer",
-        _enum: "ordinal",
-        _value: "targetEnum"
-      } ]
-    } ]));
-  }
+  await step("範囲表示レイヤーを隠す", () => batchPlay([ {
+    _obj: "hide",
+    _target: [ {
+      _ref: "layer",
+      _enum: "ordinal",
+      _value: "targetEnum"
+    } ]
+  } ]));
   if (draftLayerId != null) {
     await step("下書きレイヤーの削除", () => deleteLayerById(draftLayerId));
   }
@@ -864,7 +990,8 @@ async function createMaskGroupBody(doc, kind, feather, options = {}) {
     groupId: groupId,
     groupName: name,
     docId: doc.id,
-    effectiveKind: effectiveKind
+    effectiveKind: effectiveKind,
+    buildParts: buildParts
   };
 }
 
@@ -1148,8 +1275,14 @@ async function renderLinearDraft(doc, params) {
   };
 }
 
-async function startLinearDraft(params) {
+async function startLinearDraft(params, expectedDocId) {
   return runModal("グラデ下書きの準備", async ({doc: doc}) => {
+    if (expectedDocId != null && doc && doc.id !== expectedDocId) {
+      return {
+        skipped: true,
+        reason: "documentChanged"
+      };
+    }
     await step("古い下書きの掃除", () => deleteDraftLayers(doc));
     await step("選択解除", () => deselect());
     await step("最上位レイヤーの選択", () => selectTopmostLayer(doc));
@@ -1220,21 +1353,23 @@ async function startLinearDraft(params) {
 }
 
 async function reshapeDraftLinear(params, expectedDocId) {
-  return runModal("グラデ下書きの更新", async ({doc: doc}) => {
-    if (expectedDocId != null && doc && doc.id !== expectedDocId) {
-      return {
-        skipped: true,
-        reason: "documentChanged"
-      };
-    }
-    const {fromX: fromX, fromY: fromY, toX: toX, toY: toY} = await renderLinearDraft(doc, params);
+  return runModal("グラデ下書きの更新", async ({doc: doc}) => reshapeDraftLinearInternal(params, expectedDocId, doc));
+}
+
+async function reshapeDraftLinearInternal(params, expectedDocId, doc) {
+  if (expectedDocId != null && doc && doc.id !== expectedDocId) {
     return {
-      fromX: fromX,
-      fromY: fromY,
-      toX: toX,
-      toY: toY
+      skipped: true,
+      reason: "documentChanged"
     };
-  });
+  }
+  const {fromX: fromX, fromY: fromY, toX: toX, toY: toY} = await renderLinearDraft(doc, params);
+  return {
+    fromX: fromX,
+    fromY: fromY,
+    toX: toX,
+    toY: toY
+  };
 }
 
 async function renderCircleDraft(doc, params) {
@@ -1366,8 +1501,14 @@ async function renderCircleDraft(doc, params) {
   };
 }
 
-async function startCircleDraft(params) {
+async function startCircleDraft(params, expectedDocId) {
   return runModal("円形下書きの準備", async ({doc: doc}) => {
+    if (expectedDocId != null && doc && doc.id !== expectedDocId) {
+      return {
+        skipped: true,
+        reason: "documentChanged"
+      };
+    }
     await step("古い下書きの掃除", () => deleteDraftLayers(doc));
     await step("選択解除", () => deselect());
     await step("最上位レイヤーの選択", () => selectTopmostLayer(doc));
@@ -1437,25 +1578,27 @@ async function startCircleDraft(params) {
 }
 
 async function reshapeDraftCircle(params, expectedDocId) {
-  return runModal("円形下書きの更新", async ({doc: doc}) => {
-    if (expectedDocId != null && doc && doc.id !== expectedDocId) {
-      return {
-        skipped: true,
-        reason: "documentChanged"
-      };
-    }
-    const draft = findLayersByName(doc, DRAFT_LAYER_NAME)[0];
-    if (!draft) {
-      throw new UserMessageError("円の下書きがありません。「円形」を押してから調整してください");
-    }
-    await step("下書きレイヤーの選択", () => selectLayerById(draft.id));
-    const {geometry: geometry, rotationApplied: rotationApplied, limited: limited} = await renderCircleDraft(doc, params);
+  return runModal("円形下書きの更新", async ({doc: doc}) => reshapeDraftCircleInternal(params, expectedDocId, doc));
+}
+
+async function reshapeDraftCircleInternal(params, expectedDocId, doc) {
+  if (expectedDocId != null && doc && doc.id !== expectedDocId) {
     return {
-      geometry: geometry,
-      rotationApplied: rotationApplied,
-      limited: limited
+      skipped: true,
+      reason: "documentChanged"
     };
-  });
+  }
+  const draft = findLayersByName(doc, DRAFT_LAYER_NAME)[0];
+  if (!draft) {
+    throw new UserMessageError("円の下書きがありません。「円形」を押してから調整してください");
+  }
+  await step("下書きレイヤーの選択", () => selectLayerById(draft.id));
+  const {geometry: geometry, rotationApplied: rotationApplied, limited: limited} = await renderCircleDraft(doc, params);
+  return {
+    geometry: geometry,
+    rotationApplied: rotationApplied,
+    limited: limited
+  };
 }
 
 let lastPrefsSnapshot = null;
@@ -1617,7 +1760,7 @@ function listDomChannelNames(doc) {
 
 async function deleteTempChannelSilently(doc, name) {
   if (listDomChannelNames(doc) === null) {
-    return;
+    return false;
   }
   try {
     const channels = Array.from(doc && doc.channels || []);
@@ -1631,7 +1774,10 @@ async function deleteTempChannelSilently(doc, name) {
       }
       await channel.remove();
     }
-  } catch (_) {}
+    return !listDomChannelNames(doc).includes(name);
+  } catch (_) {
+    return false;
+  }
 }
 
 async function deleteLumTempChannels(doc) {
@@ -2105,7 +2251,7 @@ async function createAdjustmentLayerInGroup(doc, groupId, spec) {
     try {
       await deleteLayerById(layerId);
     } catch (_) {}
-    throw new UserMessageError(`「${spec.layerName}」レイヤーがグループの外に作成されたため取り消しました。` + "もう一度お試しください。繰り返す場合は診断結果を開発に共有してください");
+    throw new UserMessageError(`「${spec.layerName}」レイヤーがグループの外に作成されたため取り消しました。` + "もう一度お試しください。繰り返す場合はPhotoshopを再起動してください");
   }
   return child.id;
 }
@@ -2163,6 +2309,8 @@ async function listAdjustmentPresence(groupId, expectedDocId) {
       presence[key] = !!findChildByName(group, ADJUSTMENTS[key].layerName);
     }
     return presence;
+  }, {
+    readOnly: true
   });
 }
 
@@ -2208,6 +2356,8 @@ async function readGroupState(groupId, expectedDocId) {
       feather: feather,
       warnings: warnings
     };
+  }, {
+    readOnly: true
   });
 }
 
@@ -2419,54 +2569,625 @@ async function combineMaskFromDraft(groupId, kind, mode, feather, expectedDocId,
   });
 }
 
+function normalizeEditablePart(part) {
+  return {
+    id: String(part.id),
+    kind: String(part.kind),
+    mode: String(part.mode),
+    params: part.params && typeof part.params === "object" ? {
+      ...part.params
+    } : {},
+    storageLayerId: part.storageLayerId == null ? null : Number(part.storageLayerId)
+  };
+}
+
+async function fillSelectionWithRgb(red, green, blue) {
+  await batchPlay([ {
+    _obj: "fill",
+    using: {
+      _enum: "fillContents",
+      _value: "color"
+    },
+    color: {
+      _obj: "RGBColor",
+      red: red,
+      grain: green,
+      blue: blue
+    },
+    opacity: {
+      _unit: "percentUnit",
+      _value: 100
+    },
+    mode: {
+      _enum: "blendMode",
+      _value: "normal"
+    },
+    _options: {
+      dialogOptions: "dontDisplay"
+    }
+  } ]);
+}
+
+async function createEditableStorageLayer(doc, groupId, part, order) {
+  const hasSelection = await hasActiveSelection();
+  if (!hasSelection) {
+    throw new UserMessageError("部品に保存する範囲が空です");
+  }
+  await selectLayerById(groupId);
+  const beforeId = await getTargetLayerId();
+  await batchPlay([ {
+    _obj: "make",
+    _target: [ {
+      _ref: "layer"
+    } ],
+    using: {
+      _obj: "layer"
+    }
+  } ]);
+  const layerId = await getTargetLayerId();
+  if (layerId == null || layerId === beforeId) {
+    throw new UserMessageError("部品の保存レイヤーを作成できませんでした");
+  }
+  await fillSelectionWithRgb(255, 255, 255);
+  await setLayerPropsById(layerId, {
+    name: editablePartLayerName(part, order),
+    opacity: 0
+  });
+  return layerId;
+}
+
+async function createBuildStorageLayer(doc, part, order) {
+  const hasSelection = await hasActiveSelection();
+  if (!hasSelection) {
+    throw new UserMessageError("組み立て部品に保存する範囲が空です");
+  }
+  await selectTopmostLayer(doc);
+  const beforeId = await getTargetLayerId();
+  await batchPlay([ {
+    _obj: "make",
+    _target: [ {
+      _ref: "layer"
+    } ],
+    using: {
+      _obj: "layer"
+    }
+  } ]);
+  const layerId = await getTargetLayerId();
+  if (layerId == null || layerId === beforeId) {
+    throw new UserMessageError("組み立て部品の保存レイヤーを作成できませんでした");
+  }
+  moveActiveLayerToTop(doc);
+  try {
+    await fillSelectionWithRgb(255, 255, 255);
+    await setLayerPropsById(layerId, {
+      name: editablePartLayerName(part, order, BUILD_PART_MARKER),
+      opacity: 0
+    });
+    return layerId;
+  } catch (error) {
+    await deleteLayerById(layerId).catch(() => {});
+    throw error;
+  }
+}
+
+async function duplicateActiveMaskToChannel(name) {
+  await batchPlay([ {
+    _obj: "duplicate",
+    _target: [ {
+      _ref: "channel",
+      _enum: "channel",
+      _value: "mask"
+    } ],
+    name: name,
+    _options: {
+      dialogOptions: "dontDisplay"
+    }
+  } ]);
+}
+
+async function deleteActiveLayerMaskIfPresent() {
+  try {
+    await batchPlay([ {
+      _obj: "delete",
+      _target: [ {
+        _ref: "channel",
+        _enum: "channel",
+        _value: "mask"
+      } ],
+      _options: {
+        dialogOptions: "dontDisplay"
+      }
+    } ]);
+  } catch (_) {}
+}
+
+async function backupEditableMask(doc, groupId) {
+  await deleteTempChannelSilently(doc, EDITABLE_BACKUP_CHANNEL);
+  await selectLayerById(groupId);
+  await duplicateActiveMaskToChannel(EDITABLE_BACKUP_CHANNEL);
+}
+
+async function restoreEditableMask(doc, groupId) {
+  await selectLayerById(groupId);
+  await deleteActiveLayerMaskIfPresent();
+  await loadNamedChannelSelection(EDITABLE_BACKUP_CHANNEL);
+  await addMask("revealSelection");
+  await deselect();
+}
+
+async function clearEditableMask(groupId) {
+  await selectLayerById(groupId);
+  await targetActiveLayerMask();
+  await selectAllPixels();
+  await fillSelectionWithRgb(0, 0, 0);
+  await deselect();
+}
+
+async function selectEditablePartPixels(doc, part) {
+  const layerId = Number(part.storageLayerId);
+  const layer = findLayerById(doc, layerId);
+  if (!layer) {
+    throw new UserMessageError(`部品「${part.id}」の保存画像が見つかりません`);
+  }
+  await deselect();
+  await selectLayerById(layerId);
+  const selectedLayerId = await getTargetLayerId();
+  if (Number(selectedLayerId) !== layerId) {
+    throw new UserMessageError(`部品「${part.id}」の保存画像を選択できませんでした`);
+  }
+  await loadTransparencySelection();
+}
+
+async function recomposeEditableMaskBody(doc, groupId, parts) {
+  if (!Array.isArray(parts) || parts.length === 0) {
+    throw new UserMessageError("部品がありません。マスク全体は空にできません");
+  }
+  if (parts[0].mode !== "add") {
+    throw new UserMessageError("先頭の部品は「追加」である必要があります");
+  }
+  await clearEditableMask(groupId);
+  for (const part of parts) {
+    await selectEditablePartPixels(doc, part);
+    await selectLayerById(groupId);
+    await targetActiveLayerMask();
+    if (part.mode === "intersect") {
+      await intersectLayerMaskSelection();
+      await deleteTempChannelSilently(doc, EDITABLE_INTERSECT_CHANNEL);
+      try {
+        await duplicateSelectionToChannel(EDITABLE_INTERSECT_CHANNEL);
+        await deselect();
+        await selectAllPixels();
+        await fillSelectionWithRgb(0, 0, 0);
+        await loadNamedChannelSelection(EDITABLE_INTERSECT_CHANNEL);
+        await fillSelectionWithRgb(255, 255, 255);
+      } finally {
+        await deleteTempChannelSilently(doc, EDITABLE_INTERSECT_CHANNEL);
+      }
+    } else if (part.mode === "subtract") {
+      await fillSelectionWithRgb(0, 0, 0);
+    } else {
+      await fillSelectionWithRgb(255, 255, 255);
+    }
+    await deselect();
+  }
+}
+
+async function writeEditablePartMetadata(parts) {
+  for (let index = 0; index < parts.length; index += 1) {
+    const part = parts[index];
+    await setLayerPropsById(part.storageLayerId, {
+      name: editablePartLayerName(part, index),
+      opacity: 0
+    });
+  }
+}
+
+async function finalizeEditableTransaction(doc, groupId, oldParts, nextParts) {
+  await backupEditableMask(doc, groupId);
+  try {
+    await recomposeEditableMaskBody(doc, groupId, nextParts);
+    await writeEditablePartMetadata(nextParts);
+  } catch (error) {
+    const rollbackErrors = [];
+    try {
+      await restoreEditableMask(doc, groupId);
+    } catch (restoreError) {
+      rollbackErrors.push(`元のマスクの復元にも失敗しました: ${restoreError.message || restoreError}`);
+    }
+    try {
+      await writeEditablePartMetadata(oldParts || []);
+    } catch (metadataError) {
+      rollbackErrors.push(`元の部品情報の復元にも失敗しました: ${metadataError.message || metadataError}`);
+    }
+    if (rollbackErrors.length > 0) {
+      throw new Error(`${error.message || error}。さらに${rollbackErrors.join("。")}`);
+    }
+    throw error;
+  }
+  const warnings = [];
+  const keepIds = new Set(nextParts.map(part => Number(part.storageLayerId)));
+  for (const oldPart of oldParts || []) {
+    const oldId = Number(oldPart.storageLayerId);
+    if (oldId && !keepIds.has(oldId)) {
+      try {
+        await deleteLayerById(oldId);
+      } catch (deleteError) {
+        await setLayerPropsById(oldId, {
+          name: `Lrマスク 旧部品（削除失敗） ${oldPart.id}`,
+          opacity: 0
+        }).catch(() => {});
+        warnings.push(`旧部品「${oldPart.id}」の保存レイヤーを削除できませんでした: ${deleteError.message || deleteError}`);
+      }
+    }
+  }
+  const cleaned = await deleteTempChannelSilently(doc, EDITABLE_BACKUP_CHANNEL);
+  if (!cleaned) {
+    warnings.push("再合成バックアップチャンネルを削除できませんでした");
+  }
+  await selectLayerById(groupId);
+  return {
+    warning: warnings.length > 0 ? `本体は成功しましたが、${warnings.join(" / ")}` : null
+  };
+}
+
+function assertEditablePartsAvailable(doc, parts) {
+  for (const part of parts || []) {
+    if (part.storageLayerId != null && !findLayerById(doc, Number(part.storageLayerId))) {
+      throw new UserMessageError(`部品「${part.id}」の保存画像が見つかりません。部品を削除してください`);
+    }
+  }
+}
+
+async function initializeEditableModel(groupId, part, expectedDocId) {
+  return runModal("編集可能な部品を保存", async ({doc: doc}) => {
+    ensureSameDocument(doc, expectedDocId);
+    const group = requireMaskGroup(doc, groupId);
+    const recovered = readEditableParts(group);
+    if (recovered.editable) {
+      return {
+        parts: recovered.parts,
+        warning: null
+      };
+    }
+    const normalized = normalizeEditablePart({
+      ...part,
+      mode: "add"
+    });
+    await selectLayerById(groupId);
+    await loadLayerMaskSelection();
+    const storageLayerId = await createEditableStorageLayer(doc, groupId, normalized, 0);
+    const stored = {
+      ...normalized,
+      storageLayerId: storageLayerId
+    };
+    await writeEditablePartMetadata([ stored ]);
+    await deselect();
+    await selectLayerById(groupId);
+    return {
+      parts: [ stored ],
+      warning: null
+    };
+  });
+}
+
+async function initializeEditableBuildModel(groupId, buildParts, expectedDocId) {
+  return runModal("組み立て部品を個別保存", async ({doc: doc}) => {
+    ensureSameDocument(doc, expectedDocId);
+    requireMaskGroup(doc, groupId);
+    const sourceParts = (buildParts || []).map(normalizeEditablePart);
+    if (sourceParts.length === 0) {
+      throw new UserMessageError("組み立て部品の個別情報がありません。組み立てをやり直してください");
+    }
+    if (sourceParts[0].mode !== "add") {
+      throw new UserMessageError("組み立ての先頭部品は「追加」である必要があります");
+    }
+    const createdLayerIds = [];
+    const nextParts = [];
+    try {
+      for (let index = 0; index < sourceParts.length; index += 1) {
+        const source = sourceParts[index];
+        await selectEditablePartPixels(doc, source);
+        const storageLayerId = await createEditableStorageLayer(doc, groupId, source, index);
+        createdLayerIds.push(storageLayerId);
+        nextParts.push({
+          ...source,
+          storageLayerId: storageLayerId
+        });
+      }
+      await writeEditablePartMetadata(nextParts);
+      await deselect();
+      await selectLayerById(groupId);
+    } catch (error) {
+      for (const id of createdLayerIds) {
+        await deleteLayerById(id).catch(() => {});
+      }
+      try {
+        await deleteLayerById(groupId);
+      } catch (rollbackError) {
+        throw new Error(`${error.message || error}。さらに作成したマスクグループの巻き戻しにも失敗しました: ${rollbackError.message || rollbackError}`);
+      }
+      throw error;
+    }
+    const cleanupWarnings = [];
+    for (const source of sourceParts) {
+      try {
+        await deleteLayerById(source.storageLayerId);
+      } catch (error) {
+        await setLayerPropsById(source.storageLayerId, {
+          name: `組み立て旧部品（削除失敗） ${source.id}`,
+          opacity: 0
+        }).catch(() => {});
+        cleanupWarnings.push(`確定前の部品「${source.id}」を削除できませんでした: ${error.message || error}`);
+      }
+    }
+    const warnings = cleanupWarnings.filter(Boolean);
+    return {
+      parts: nextParts,
+      warning: warnings.length > 0 ? warnings.join(" / ") : null
+    };
+  });
+}
+
+async function appendEditablePart(groupId, part, expectedDocId, feather, options = {}) {
+  return runModal("マスク部品を追加", async ({doc: doc}) => {
+    ensureSameDocument(doc, expectedDocId);
+    const group = requireMaskGroup(doc, groupId);
+    let oldParts = readEditableParts(group).parts.map(normalizeEditablePart);
+    const createdLayerIds = [];
+    if (oldParts.length === 0) {
+      const legacy = {
+        id: "p1",
+        kind: "legacy",
+        mode: "add",
+        params: {
+          locked: true
+        },
+        storageLayerId: null
+      };
+      await selectLayerById(groupId);
+      await loadLayerMaskSelection();
+      legacy.storageLayerId = await createEditableStorageLayer(doc, groupId, legacy, 0);
+      createdLayerIds.push(legacy.storageLayerId);
+      oldParts = [ legacy ];
+    }
+    const normalized = normalizeEditablePart(part);
+    if (normalized.kind === "all") {
+      await selectAllPixels();
+    } else {
+      await selectFromShape(doc, normalized.kind, feather, options, "combine");
+    }
+    normalized.storageLayerId = await createEditableStorageLayer(doc, groupId, normalized, oldParts.length);
+    createdLayerIds.push(normalized.storageLayerId);
+    const nextParts = [ ...oldParts, normalized ];
+    try {
+      const result = await finalizeEditableTransaction(doc, groupId, readEditableParts(group).parts, nextParts);
+      await deleteDraftLayers(doc);
+      return {
+        parts: nextParts,
+        warning: result.warning
+      };
+    } catch (error) {
+      for (const id of createdLayerIds) {
+        await deleteLayerById(id).catch(() => {});
+      }
+      throw error;
+    }
+  });
+}
+
+async function commitEditableParts(groupId, parts, expectedDocId, options = {}) {
+  return runModal("マスク部品を再合成", async ({doc: doc}) => {
+    ensureSameDocument(doc, expectedDocId);
+    const group = requireMaskGroup(doc, groupId);
+    const oldParts = readEditableParts(group).parts.map(normalizeEditablePart);
+    const nextParts = (parts || []).map(normalizeEditablePart);
+    assertEditablePartsAvailable(doc, nextParts);
+    const result = await finalizeEditableTransaction(doc, groupId, oldParts, nextParts);
+    let warning = result.warning;
+    if (options.cleanupDraft) {
+      try {
+        await deleteDraftLayers(doc);
+      } catch (_) {
+        warning = [ warning, "赤い下書きを消せませんでした。『作りかけの表示を消す』を押してください" ].filter(Boolean).join(" / ");
+      }
+    }
+    return {
+      parts: nextParts,
+      warning: warning
+    };
+  });
+}
+
+async function regenerateEditablePart(groupId, parts, partId, expectedDocId, feather, options = {}) {
+  return runModal("マスク部品を編集", async ({doc: doc}) => regenerateEditablePartInternal(doc, groupId, parts, partId, expectedDocId, feather, options));
+}
+
+async function regenerateEditablePartInternal(doc, groupId, parts, partId, expectedDocId, feather, options = {}) {
+  ensureSameDocument(doc, expectedDocId);
+  const group = requireMaskGroup(doc, groupId);
+  const oldParts = readEditableParts(group).parts.map(normalizeEditablePart);
+  const nextParts = (parts || []).map(normalizeEditablePart);
+  assertEditablePartsAvailable(doc, nextParts);
+  const index = nextParts.findIndex(item => item.id === partId);
+  if (index < 0) {
+    throw new UserMessageError("編集する部品が見つかりません");
+  }
+  const part = nextParts[index];
+  if ([ "legacy", "brush" ].includes(part.kind)) {
+    throw new UserMessageError("この部品は画素で保存されているため、演算と順序だけ変更できます");
+  }
+  if (part.kind === "all") {
+    await selectAllPixels();
+  } else {
+    await selectFromShape(doc, part.kind, feather, options, "combine");
+  }
+  const newLayerId = await createEditableStorageLayer(doc, groupId, part, index);
+  const oldLayerId = part.storageLayerId;
+  nextParts[index] = {
+    ...part,
+    storageLayerId: newLayerId
+  };
+  try {
+    const result = await finalizeEditableTransaction(doc, groupId, oldParts, nextParts);
+    return {
+      parts: nextParts,
+      warning: result.warning
+    };
+  } catch (error) {
+    await deleteLayerById(newLayerId).catch(() => {});
+    if (oldLayerId != null) {
+      await setLayerPropsById(oldLayerId, {
+        name: editablePartLayerName(part, index),
+        opacity: 0
+      }).catch(() => {});
+    }
+    throw error;
+  }
+}
+
+async function reshapeAndRegenerateEditablePart(kind, params, groupId, parts, partId, expectedDocId, feather, testOptions = {}) {
+  const modal = testOptions.runModal || runModal;
+  const reshape = testOptions.reshape || (kind === "circle" ? reshapeDraftCircleInternal : reshapeDraftLinearInternal);
+  const regenerate = testOptions.regenerate || regenerateEditablePartInternal;
+  return modal("マスク部品を編集", async ({doc: doc}) => {
+    const draftResult = await reshape(params, expectedDocId, doc);
+    if (draftResult && draftResult.skipped) {
+      return draftResult;
+    }
+    const saved = await regenerate(doc, groupId, parts, partId, expectedDocId, feather, params);
+    return {
+      ...saved,
+      draftResult: draftResult
+    };
+  }, {
+    rollbackOnError: true
+  });
+}
+
 async function addShapeToBuild(kind, mode, feather, options = {}) {
   const featherAmount = clampNumber(feather == null ? 0 : feather, 0, 250);
   const commandName = mode === "subtract" ? "形を引く" : mode === "intersect" ? "形で絞り込む" : "形を足す";
   return runModal(commandName, async ({doc: doc}) => {
+    const existingBuild = findLayersByName(doc, BUILD_LAYER_NAME)[0];
+    if (!existingBuild && (mode === "subtract" || mode === "intersect")) {
+      throw new UserMessageError("まだ形がありません。先に「形を足す」で範囲を作ってください");
+    }
+    const previousParts = readBuildEditableParts(doc).parts;
     await selectFromShape(doc, kind, featherAmount, {
       ...options,
       mode: mode
     }, "build");
-    const existingBuild = findLayersByName(doc, BUILD_LAYER_NAME)[0];
-    let buildLayerId = existingBuild ? existingBuild.id : null;
-    if (buildLayerId == null) {
-      if (mode === "subtract" || mode === "intersect") {
-        throw new UserMessageError("まだ形がありません。先に「形を足す」で範囲を作ってください");
-      }
-      await deleteTempChannelSilently(doc, BUILD_TEMP_SELECTION_CHANNEL);
-      try {
-        await step("選択範囲の一時退避", () => duplicateSelectionToChannel(BUILD_TEMP_SELECTION_CHANNEL));
-        await step("選択解除", () => deselect());
-        await step("最上位レイヤーの選択", () => selectTopmostLayer(doc));
-        let beforeId = null;
+    const maxPartId = previousParts.reduce((max, part) => {
+      const match = String(part.id).match(/^p(\d+)$/);
+      return match ? Math.max(max, Number(match[1])) : max;
+    }, 0);
+    const requestedPart = options.editablePart || {};
+    const newPart = normalizeEditablePart({
+      id: requestedPart.id || `p${maxPartId + 1}`,
+      kind: kind,
+      mode: mode,
+      params: requestedPart.params && typeof requestedPart.params === "object" ? requestedPart.params : {},
+      storageLayerId: null
+    });
+    const buildStorageLayerId = await createBuildStorageLayer(doc, newPart, previousParts.length);
+    newPart.storageLayerId = buildStorageLayerId;
+    try {
+      let buildLayerId = existingBuild ? existingBuild.id : null;
+      if (buildLayerId == null) {
+        await deleteTempChannelSilently(doc, BUILD_TEMP_SELECTION_CHANNEL);
         try {
-          beforeId = await getTargetLayerId();
-        } catch (_) {
-          beforeId = null;
-        }
-        if (beforeId == null) {
-          throw new UserMessageError("現在のレイヤー状態を確認できませんでした。もう一度お試しください");
-        }
-        await step("組み立てレイヤーの作成", () => batchPlay([ {
-          _obj: "make",
-          _target: [ {
-            _ref: "layer"
-          } ],
-          using: {
-            _obj: "layer",
-            name: BUILD_LAYER_NAME
+          await step("選択範囲の一時退避", () => duplicateSelectionToChannel(BUILD_TEMP_SELECTION_CHANNEL));
+          await step("選択解除", () => deselect());
+          await step("最上位レイヤーの選択", () => selectTopmostLayer(doc));
+          let beforeId = null;
+          try {
+            beforeId = await getTargetLayerId();
+          } catch (_) {
+            beforeId = null;
           }
-        } ]));
-        let newLayerId = null;
+          if (beforeId == null) {
+            throw new UserMessageError("現在のレイヤー状態を確認できませんでした。もう一度お試しください");
+          }
+          await step("組み立てレイヤーの作成", () => batchPlay([ {
+            _obj: "make",
+            _target: [ {
+              _ref: "layer"
+            } ],
+            using: {
+              _obj: "layer",
+              name: BUILD_LAYER_NAME
+            }
+          } ]));
+          let newLayerId = null;
+          try {
+            newLayerId = await getTargetLayerId();
+          } catch (_) {
+            newLayerId = null;
+          }
+          if (newLayerId == null || newLayerId === beforeId) {
+            throw new UserMessageError("組み立てレイヤーを作成できませんでした。もう一度お試しください");
+          }
+          await step("赤の塗りつぶし", () => batchPlay([ {
+            _obj: "fill",
+            using: {
+              _enum: "fillContents",
+              _value: "color"
+            },
+            color: {
+              _obj: "RGBColor",
+              red: 255,
+              grain: 0,
+              blue: 0
+            },
+            opacity: {
+              _unit: "percentUnit",
+              _value: 100
+            },
+            mode: {
+              _enum: "blendMode",
+              _value: "normal"
+            }
+          } ]));
+          await step("組み立てレイヤーの設定", () => setLayerPropsById(newLayerId, {
+            name: BUILD_LAYER_NAME,
+            opacity: 50
+          }));
+          moveActiveLayerToTop(doc);
+          await step("黒マスクの作成", () => addMask("hideAll"));
+          buildLayerId = newLayerId;
+          await step("選択範囲の復元", () => loadNamedChannelSelection(BUILD_TEMP_SELECTION_CHANNEL));
+        } finally {
+          await deleteTempChannelSilently(doc, BUILD_TEMP_SELECTION_CHANNEL);
+        }
+      }
+      await step("組み立てレイヤーの選択", () => selectLayerById(buildLayerId));
+      await step("マスクの選択", () => targetActiveLayerMask());
+      if (mode === "intersect") {
+        await step("組み立て範囲との共通部分を計算", () => intersectLayerMaskSelection());
+        await deleteTempChannelSilently(doc, BUILD_TEMP_SELECTION_CHANNEL);
         try {
-          newLayerId = await getTargetLayerId();
-        } catch (_) {
-          newLayerId = null;
+          await step("共通部分の一時退避", () => duplicateSelectionToChannel(BUILD_TEMP_SELECTION_CHANNEL));
+          await step("選択解除", () => deselect());
+          await step("マスクを黒でクリア", () => batchPlay([ {
+            _obj: "fill",
+            using: {
+              _enum: "fillContents",
+              _value: "black"
+            },
+            opacity: {
+              _unit: "percentUnit",
+              _value: 100
+            },
+            mode: {
+              _enum: "blendMode",
+              _value: "normal"
+            }
+          } ]));
+          await step("共通部分の選択範囲を復元", () => loadNamedChannelSelection(BUILD_TEMP_SELECTION_CHANNEL));
+        } finally {
+          await deleteTempChannelSilently(doc, BUILD_TEMP_SELECTION_CHANNEL);
         }
-        if (newLayerId == null || newLayerId === beforeId) {
-          throw new UserMessageError("組み立てレイヤーを作成できませんでした。もう一度お試しください");
-        }
-        await step("赤の塗りつぶし", () => batchPlay([ {
+        await step("共通部分を白で塗りつぶし", () => batchPlay([ {
           _obj: "fill",
           using: {
             _enum: "fillContents",
@@ -2475,8 +3196,8 @@ async function addShapeToBuild(kind, mode, feather, options = {}) {
           color: {
             _obj: "RGBColor",
             red: 255,
-            grain: 0,
-            blue: 0
+            grain: 255,
+            blue: 255
           },
           opacity: {
             _unit: "percentUnit",
@@ -2485,112 +3206,57 @@ async function addShapeToBuild(kind, mode, feather, options = {}) {
           mode: {
             _enum: "blendMode",
             _value: "normal"
+          },
+          _options: {
+            dialogOptions: "dontDisplay"
           }
         } ]));
-        await step("組み立てレイヤーの設定", () => setLayerPropsById(newLayerId, {
-          name: BUILD_LAYER_NAME,
-          opacity: 50
-        }));
-        moveActiveLayerToTop(doc);
-        await step("黒マスクの作成", () => addMask("hideAll"));
-        buildLayerId = newLayerId;
-        await step("選択範囲の復元", () => loadNamedChannelSelection(BUILD_TEMP_SELECTION_CHANNEL));
-      } finally {
-        await deleteTempChannelSilently(doc, BUILD_TEMP_SELECTION_CHANNEL);
-      }
-    }
-    await step("組み立てレイヤーの選択", () => selectLayerById(buildLayerId));
-    await step("マスクの選択", () => targetActiveLayerMask());
-    if (mode === "intersect") {
-      await step("組み立て範囲との共通部分を計算", () => intersectLayerMaskSelection());
-      await deleteTempChannelSilently(doc, BUILD_TEMP_SELECTION_CHANNEL);
-      try {
-        await step("共通部分の一時退避", () => duplicateSelectionToChannel(BUILD_TEMP_SELECTION_CHANNEL));
-        await step("選択解除", () => deselect());
-        await step("マスクを黒でクリア", () => batchPlay([ {
-          _obj: "fill",
-          using: {
-            _enum: "fillContents",
-            _value: "black"
-          },
-          opacity: {
-            _unit: "percentUnit",
-            _value: 100
-          },
-          mode: {
-            _enum: "blendMode",
-            _value: "normal"
-          }
-        } ]));
-        await step("共通部分の選択範囲を復元", () => loadNamedChannelSelection(BUILD_TEMP_SELECTION_CHANNEL));
-      } finally {
-        await deleteTempChannelSilently(doc, BUILD_TEMP_SELECTION_CHANNEL);
-      }
-      await step("共通部分を白で塗りつぶし", () => batchPlay([ {
-        _obj: "fill",
-        using: {
-          _enum: "fillContents",
-          _value: "color"
-        },
-        color: {
+      } else {
+        const fillColor = mode === "subtract" ? {
+          _obj: "RGBColor",
+          red: 0,
+          grain: 0,
+          blue: 0
+        } : {
           _obj: "RGBColor",
           red: 255,
           grain: 255,
           blue: 255
-        },
-        opacity: {
-          _unit: "percentUnit",
-          _value: 100
-        },
-        mode: {
-          _enum: "blendMode",
-          _value: "normal"
-        },
-        _options: {
-          dialogOptions: "dontDisplay"
-        }
-      } ]));
-    } else {
-      const fillColor = mode === "subtract" ? {
-        _obj: "RGBColor",
-        red: 0,
-        grain: 0,
-        blue: 0
-      } : {
-        _obj: "RGBColor",
-        red: 255,
-        grain: 255,
-        blue: 255
+        };
+        await step(mode === "subtract" ? "黒で塗りつぶし" : "白で塗りつぶし", () => batchPlay([ {
+          _obj: "fill",
+          using: {
+            _enum: "fillContents",
+            _value: "color"
+          },
+          color: fillColor,
+          opacity: {
+            _unit: "percentUnit",
+            _value: 100
+          },
+          mode: {
+            _enum: "blendMode",
+            _value: "normal"
+          },
+          _options: {
+            dialogOptions: "dontDisplay"
+          }
+        } ]));
+      }
+      await step("選択解除", () => deselect());
+      await step("下書きレイヤーの削除", () => deleteDraftLayers(doc));
+      await step("組み立てレイヤーの選択", () => selectLayerById(buildLayerId));
+      await step("マスクの選択", () => targetActiveLayerMask());
+      return {
+        mode: mode,
+        kind: kind,
+        docId: doc.id,
+        parts: [ ...previousParts, newPart ]
       };
-      await step(mode === "subtract" ? "黒で塗りつぶし" : "白で塗りつぶし", () => batchPlay([ {
-        _obj: "fill",
-        using: {
-          _enum: "fillContents",
-          _value: "color"
-        },
-        color: fillColor,
-        opacity: {
-          _unit: "percentUnit",
-          _value: 100
-        },
-        mode: {
-          _enum: "blendMode",
-          _value: "normal"
-        },
-        _options: {
-          dialogOptions: "dontDisplay"
-        }
-      } ]));
+    } catch (error) {
+      await deleteLayerById(buildStorageLayerId).catch(() => {});
+      throw error;
     }
-    await step("選択解除", () => deselect());
-    await step("下書きレイヤーの削除", () => deleteDraftLayers(doc));
-    await step("組み立てレイヤーの選択", () => selectLayerById(buildLayerId));
-    await step("マスクの選択", () => targetActiveLayerMask());
-    return {
-      mode: mode,
-      kind: kind,
-      docId: doc.id
-    };
   });
 }
 
@@ -2598,17 +3264,26 @@ async function hasBuildLayer() {
   const doc = getActiveDocument();
   if (!doc) {
     return {
-      exists: false
+      exists: false,
+      parts: [],
+      count: 0
     };
   }
+  const exists = findLayersByName(doc, BUILD_LAYER_NAME).length > 0;
+  const parts = exists ? readBuildEditableParts(doc).parts : [];
   return {
-    exists: findLayersByName(doc, BUILD_LAYER_NAME).length > 0
+    exists: exists,
+    parts: parts,
+    count: parts.length || (exists ? 1 : 0)
   };
 }
 
 async function clearBuild() {
   return runModal("組み立てをやり直す", async ({doc: doc}) => {
     await deleteLayersByName(doc, BUILD_LAYER_NAME);
+    for (const part of readBuildEditableParts(doc).parts) {
+      await deleteLayerById(part.storageLayerId);
+    }
     await deleteTempChannelSilently(doc, BUILD_TEMP_SELECTION_CHANNEL);
   });
 }
@@ -2628,6 +3303,15 @@ async function deleteMaskGroup(groupId, expectedDocId) {
       } ],
       deleteContained: true
     } ]);
+    let warning = null;
+    try {
+      await deleteDraftLayers(doc);
+    } catch (_) {
+      warning = "赤い下書きを消せませんでした。『作りかけの表示を消す』を押してください";
+    }
+    return {
+      warning: warning
+    };
   });
 }
 
@@ -2827,6 +3511,8 @@ async function readMaskFeather(groupId, expectedDocId) {
     ensureSameDocument(doc, expectedDocId);
     requireMaskGroup(doc, groupId);
     return readMaskFeatherInternal(groupId);
+  }, {
+    readOnly: true
   });
 }
 
@@ -3003,6 +3689,8 @@ async function readMixerRange(groupId, rangeKey, expectedDocId) {
       saturation: entry && entry.saturation || 0,
       lightness: entry && entry.lightness || 0
     };
+  }, {
+    readOnly: true
   });
 }
 
@@ -3104,6 +3792,8 @@ async function readActiveLayerAdjustment() {
       }
     }
     return lines.join("\n");
+  }, {
+    readOnly: true
   });
 }
 
@@ -3113,7 +3803,10 @@ module.exports = {
   applyAdjustment: applyAdjustment,
   applyOrtonToGroup: applyOrtonToGroup,
   applyMixerRange: applyMixerRange,
+  assertEditablePartsAvailable: assertEditablePartsAvailable,
+  appendEditablePart: appendEditablePart,
   clearBuild: clearBuild,
+  commitEditableParts: commitEditableParts,
   combineMaskFromDraft: combineMaskFromDraft,
   createMaskGroup: createMaskGroup,
   hasBuildLayer: hasBuildLayer,
@@ -3122,6 +3815,8 @@ module.exports = {
   editMaskWithBrush: editMaskWithBrush,
   editMaskWithGradient: editMaskWithGradient,
   invertMask: invertMask,
+  initializeEditableModel: initializeEditableModel,
+  initializeEditableBuildModel: initializeEditableBuildModel,
   readGroupState: readGroupState,
   readMaskFeather: readMaskFeather,
   reshapeDraftCircle: reshapeDraftCircle,
@@ -3131,6 +3826,10 @@ module.exports = {
   listAdjustmentPresence: listAdjustmentPresence,
   readActiveLayerAdjustment: readActiveLayerAdjustment,
   readMixerRange: readMixerRange,
+  hasHistoryChanged: hasHistoryChanged,
+  rememberActiveHistoryState: rememberActiveHistoryState,
+  regenerateEditablePart: regenerateEditablePart,
+  reshapeAndRegenerateEditablePart: reshapeAndRegenerateEditablePart,
   removeAdjustmentLayer: removeAdjustmentLayer,
   replaceMaskFromSelection: replaceMaskFromSelection,
   cleanupMaskDraft: cleanupMaskDraft,

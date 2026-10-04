@@ -73,7 +73,7 @@ test("paramsToPreviewShape: ratio>0は縦長、ratio<0は横長になる", () =>
   assert.ok(wide.innerWidth > wide.innerHeight, `w=${wide.innerWidth}, h=${wide.innerHeight}`);
 });
 
-test("paramsToPreviewShape: ぼかし幅を変えてもouterWidth/outerHeightは変わらない（外側リング＝外形固定。Lightroom方式）", () => {
+test("paramsToPreviewShape: ぼかし幅を変えても外形の幅と高さは変わらない", () => {
   const zero = paramsToPreviewShape({
     ...BASE_PARAMS,
     featherPx: 0

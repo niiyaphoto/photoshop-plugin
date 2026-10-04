@@ -17,6 +17,38 @@ class UserMessageError extends Error {
   }
 }
 
+class ExternalChangeError extends UserMessageError {
+  constructor(message = "Photoshop側の変更を検出しました") {
+    super(message);
+    this.name = "ExternalChangeError";
+    this.code = "EXTERNAL_CHANGE";
+  }
+}
+
+const rememberedHistoryStates = new Map;
+
+function getHistoryStateId(doc) {
+  const state = doc && doc.activeHistoryState;
+  return state && state.id != null ? state.id : null;
+}
+
+function rememberHistoryState(doc) {
+  if (!doc || doc.id == null) {
+    return null;
+  }
+  const id = getHistoryStateId(doc);
+  rememberedHistoryStates.set(doc.id, id);
+  return id;
+}
+
+function rememberActiveHistoryState() {
+  return rememberHistoryState(getActiveDocument());
+}
+
+function getRememberedHistoryState(doc) {
+  return doc && doc.id != null ? rememberedHistoryStates.get(doc.id) : undefined;
+}
+
 function enumText(value) {
   if (value == null) {
     return "";
@@ -72,7 +104,7 @@ async function batchPlay(commands, options = {}) {
   });
 }
 
-async function suspendHistory(executionContext, doc, name, work) {
+async function suspendHistory(executionContext, doc, name, work, options = {}) {
   const hostControl = executionContext && executionContext.hostControl;
   if (!hostControl || !hostControl.suspendHistory || !doc || doc.id == null) {
     return work();
@@ -81,23 +113,121 @@ async function suspendHistory(executionContext, doc, name, work) {
     documentID: doc.id,
     name: name
   });
+  let resumed = false;
   try {
-    return await work();
-  } finally {
+    const result = await work();
+    resumed = true;
     await hostControl.resumeHistory(suspensionID);
+    return result;
+  } catch (error) {
+    if (!resumed && options.rollbackOnError === true) {
+      resumed = true;
+      try {
+        await hostControl.resumeHistory(suspensionID, false);
+      } catch (rollbackError) {
+        error.message = `${error.message || String(error)}。下書きを元に戻せませんでした。『作りかけの表示を消す』を押してください`;
+      }
+    } else if (!resumed) {
+      resumed = true;
+      await hostControl.resumeHistory(suspensionID);
+    }
+    throw error;
   }
 }
 
-async function runModal(name, work) {
+async function runModal(name, work, options = {}) {
   const doc = ensureOpenDocument();
   ensureSupportedDocument(doc);
-  return core.executeAsModal(async executionContext => suspendHistory(executionContext, doc, name, () => work({
-    app: app,
-    action: action,
-    batchPlay: batchPlay,
-    doc: doc,
-    executionContext: executionContext
-  })), {
+  const readOnly = options.readOnly === true;
+  return core.executeAsModal(async executionContext => {
+    if (!readOnly) {
+      const expected = getRememberedHistoryState(doc);
+      const current = getHistoryStateId(doc);
+      if (expected === undefined || current !== expected) {
+        throw new ExternalChangeError;
+      }
+    }
+    if (readOnly) {
+      return work({
+        app: app,
+        action: action,
+        batchPlay: batchPlay,
+        doc: doc,
+        executionContext: executionContext
+      });
+    }
+    try {
+      return await suspendHistory(executionContext, doc, name, () => work({
+        app: app,
+        action: action,
+        batchPlay: batchPlay,
+        doc: doc,
+        executionContext: executionContext
+      }), {
+        rollbackOnError: options.rollbackOnError === true
+      });
+    } finally {
+      rememberHistoryState(doc);
+    }
+  }, {
+    commandName: name,
+    historyStateInfo: {
+      name: name,
+      target: doc.id == null ? undefined : [ {
+        _ref: "document",
+        _id: doc.id
+      } ]
+    }
+  });
+}
+
+async function runReadOnlyRollbackModal(name, work) {
+  const doc = ensureOpenDocument();
+  ensureSupportedDocument(doc);
+  return core.executeAsModal(async executionContext => {
+    const hostControl = executionContext && executionContext.hostControl;
+    if (!hostControl || !hostControl.suspendHistory || doc.id == null) {
+      return work({
+        app: app,
+        action: action,
+        batchPlay: batchPlay,
+        doc: doc,
+        executionContext: executionContext
+      });
+    }
+    const suspensionID = await hostControl.suspendHistory({
+      documentID: doc.id,
+      name: name
+    });
+    let result;
+    let workError = null;
+    try {
+      result = await work({
+        app: app,
+        action: action,
+        batchPlay: batchPlay,
+        doc: doc,
+        executionContext: executionContext
+      });
+    } catch (error) {
+      workError = error;
+    }
+    try {
+      await hostControl.resumeHistory(suspensionID, false);
+    } catch (error) {
+      const rollbackError = new UserMessageError("プレビュー用の一時表示を元に戻せませんでした。レイヤーの表示を確認してください");
+      rollbackError.cause = error;
+      if (workError) {
+        workError.message = `${workError.message || String(workError)}。${rollbackError.message}`;
+        throw workError;
+      }
+      throw rollbackError;
+    }
+    if (workError) {
+      throw workError;
+    }
+    return result;
+  }, {
     commandName: name,
     historyStateInfo: {
       name: name,
@@ -432,6 +562,7 @@ async function setCurrentLayerProperties(options = {}) {
 }
 
 module.exports = {
+  ExternalChangeError: ExternalChangeError,
   UserMessageError: UserMessageError,
   addRevealAllMask: addRevealAllMask,
   app: app,
@@ -449,6 +580,11 @@ module.exports = {
   moveActiveLayerToTop: moveActiveLayerToTop,
   moveLayerToTop: moveLayerToTop,
   runModal: runModal,
+  runReadOnlyRollbackModal: runReadOnlyRollbackModal,
+  getHistoryStateId: getHistoryStateId,
+  getRememberedHistoryState: getRememberedHistoryState,
+  rememberActiveHistoryState: rememberActiveHistoryState,
+  rememberHistoryState: rememberHistoryState,
   selectLayerById: selectLayerById,
   selectTopmostLayer: selectTopmostLayer,
   setActiveCurvesAdjustment: setActiveCurvesAdjustment,

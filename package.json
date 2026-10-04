@@ -2,7 +2,7 @@
   "name": "photoshop-plugin",
   "version": "0.1.0",
   "private": false,
-  "description": "Photoshop UXP Lightroom風マスクパネル（OSS公開版）",
+  "description": "Photoshop UXP 部分補正マスクパネル（OSS公開版）",
   "license": "GPL-3.0-or-later",
   "scripts": {
     "test": "node --test \"tests/*.test.js\"",

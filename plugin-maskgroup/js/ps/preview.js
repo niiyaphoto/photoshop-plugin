@@ -4,11 +4,9 @@ const ps = require("photoshop");
 
 const app = ps.app;
 
-const core = ps.core;
-
 const imaging = ps.imaging;
 
-const {UserMessageError: UserMessageError, batchPlay: batchPlay} = require("./helpers.js");
+const {UserMessageError: UserMessageError, batchPlay: batchPlay, runReadOnlyRollbackModal: runReadOnlyRollbackModal} = require("./helpers.js");
 
 const {DRAFT_LAYER_NAME: DRAFT_LAYER_NAME, DRAFT_LAYER_NAMES_LEGACY: DRAFT_LAYER_NAMES_LEGACY, BUILD_LAYER_NAME: BUILD_LAYER_NAME, OVERLAY_LAYER_NAME: OVERLAY_LAYER_NAME, OVERLAY_LAYER_NAME_LEGACY: OVERLAY_LAYER_NAME_LEGACY, SELECTION_PREVIEW_LAYER: SELECTION_PREVIEW_LAYER} = require("./maskgroup.js");
 
@@ -136,86 +134,64 @@ async function getDocumentPreview(maxWidth) {
   if (!doc) {
     throw new UserMessageError("ドキュメントを開いてください");
   }
-  return core.executeAsModal(async () => {
+  return runReadOnlyRollbackModal("プレビューを取得", async () => {
     let imageData = null;
-    const hiddenLayerIds = [];
-    let restoreFailedCount = 0;
     let output = null;
     try {
+      for (const layer of findVisibleLayersByNames(doc, AUTO_GENERATED_LAYER_NAMES)) {
+        await setLayerVisibilityById(layer.id, false);
+      }
+      const docWidthPx = dimensionToPixels(doc.width);
+      const docHeightPx = dimensionToPixels(doc.height);
+      const targetSize = docHeightPx > docWidthPx ? {
+        height: maxWidth
+      } : {
+        width: maxWidth
+      };
+      let pixelRoute = "profile";
+      let result;
       try {
-        for (const layer of findVisibleLayersByNames(doc, AUTO_GENERATED_LAYER_NAMES)) {
-          hiddenLayerIds.push(layer.id);
-          await setLayerVisibilityById(layer.id, false);
-        }
-        const docWidthPx = dimensionToPixels(doc.width);
-        const docHeightPx = dimensionToPixels(doc.height);
-        const targetSize = docHeightPx > docWidthPx ? {
-          height: maxWidth
-        } : {
-          width: maxWidth
-        };
-        let pixelRoute = "profile";
-        let result;
-        try {
-          result = await imaging.getPixels({
-            documentID: doc.id,
-            targetSize: targetSize,
-            applyAlpha: true,
-            colorProfile: "sRGB IEC61966-2.1"
-          });
-        } catch (_) {
-          pixelRoute = "plain";
-          result = await imaging.getPixels({
-            documentID: doc.id,
-            targetSize: targetSize
-          });
-        }
-        imageData = result && result.imageData;
-        if (!imageData) {
-          throw new UserMessageError("プレビュー画像を取得できませんでした");
-        }
-        if (imageData.colorSpace !== "RGB" || imageData.components !== 3 && imageData.components !== 4) {
-          throw new UserMessageError("この色モードのプレビューには未対応です（RGBの画像で試してください）");
-        }
-        const encoded = await encodeToBase64(imageData);
-        output = {
-          base64: encoded.base64,
-          mime: encoded.mime,
-          route: encoded.route,
-          notes: encoded.notes,
-          componentSize: imageData.componentSize,
-          components: imageData.components,
-          width: imageData.width,
-          height: imageData.height,
-          docWidth: docWidthPx,
-          docHeight: docHeightPx,
-          docId: doc.id,
-          pixelRoute: pixelRoute
-        };
-      } finally {
-        if (imageData && typeof imageData.dispose === "function") {
-          imageData.dispose();
-        }
-        for (const layerId of hiddenLayerIds) {
-          try {
-            await setLayerVisibilityById(layerId, true);
-          } catch (_) {
-            restoreFailedCount += 1;
-          }
-        }
+        result = await imaging.getPixels({
+          documentID: doc.id,
+          targetSize: targetSize,
+          applyAlpha: true,
+          colorProfile: "sRGB IEC61966-2.1"
+        });
+      } catch (_) {
+        pixelRoute = "plain";
+        result = await imaging.getPixels({
+          documentID: doc.id,
+          targetSize: targetSize
+        });
       }
-    } catch (error) {
-      if (error && typeof error === "object") {
-        error.restoreFailedCount = restoreFailedCount;
+      imageData = result && result.imageData;
+      if (!imageData) {
+        throw new UserMessageError("プレビュー画像を取得できませんでした");
       }
-      throw error;
+      if (imageData.colorSpace !== "RGB" || imageData.components !== 3 && imageData.components !== 4) {
+        throw new UserMessageError("この色モードのプレビューには未対応です（RGBの画像で試してください）");
+      }
+      const encoded = await encodeToBase64(imageData);
+      output = {
+        base64: encoded.base64,
+        mime: encoded.mime,
+        route: encoded.route,
+        notes: encoded.notes,
+        componentSize: imageData.componentSize,
+        components: imageData.components,
+        width: imageData.width,
+        height: imageData.height,
+        docWidth: docWidthPx,
+        docHeight: docHeightPx,
+        docId: doc.id,
+        pixelRoute: pixelRoute
+      };
+    } finally {
+      if (imageData && typeof imageData.dispose === "function") {
+        imageData.dispose();
+      }
     }
-    return {
-      ...output,
-      restoreFailed: restoreFailedCount > 0
-    };
-  }, {
-    commandName: "プレビューを取得"
+    return output;
   });
 }
 

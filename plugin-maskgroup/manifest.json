@@ -3,7 +3,7 @@
   "apiVersion": 2,
   "id": "com.haruharu.mask-groups",
   "name": "Lrマスク",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "main": "index.html",
   "host": {
     "app": "PS",

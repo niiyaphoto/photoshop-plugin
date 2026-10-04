@@ -248,7 +248,7 @@ test("splitFeather: 不正入力でTypeError", () => {
   assert.throws(() => splitFeather(200, undefined), TypeError);
 });
 
-test("splitFeather: featherPx=1250・softness=80で selectionFeather=250、gaussianBlur=1000、limited=false（低2対応: 具体値の直接検証）", () => {
+test("splitFeather: 最大ぼかし幅の具体値を検証する", () => {
   const result = splitFeather(1250, 80);
   assert.ok(Math.abs(result.selectionFeather - 250) < 1e-6, `selectionFeather=${result.selectionFeather}`);
   assert.ok(Math.abs(result.gaussianBlur - 1e3) < 1e-6, `gaussianBlur=${result.gaussianBlur}`);

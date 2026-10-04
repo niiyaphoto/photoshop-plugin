@@ -12,9 +12,9 @@
       <p id="status" class="status info">待機中です</p>
 
       <div class="section">
-        <h2 class="section-title" data-section="experiment">▾ 実験: パネル内プレビュー</h2>
-        <div class="section-body" id="section-experiment">
-          <sp-button id="mgPreviewTest" variant="secondary" title="開いている写真をパネル内に表示し、その上のリングで円形マスクの形を決められるようにします（写真は変更しません）。中心＝移動、外側の4点＝大きさと縦横比、内側の点＝ぼかし、下の点＝回転">プレビューを表示</sp-button>
+        <h2 class="section-title" data-section="preview">▾ 写真上で形を調整</h2>
+        <div class="section-body" id="section-preview">
+          <sp-button id="mgPreviewTest" variant="secondary" title="写真を更新します。円形・線形を選ぶと自動表示され、中心・大きさ・向き・ぼかしをドラッグできます">写真を更新</sp-button>
           <div id="mgPreviewWrap" class="preview-wrap hidden">
             <img id="mgPreviewImg" class="preview-img" />
             <div id="mgPreviewHandleSizeTop" class="preview-handle"></div>
@@ -43,13 +43,13 @@
           id="mgKindLinear"
           data-kind="linear"
           variant="secondary"
-          title="押すと画面中央に赤いグラデの下書きができます。画面上の操作は使いません。向き・幅・位置はすべてパネルのスライダーで決めます。決まったら「マスクを作成」で確定します"
+          title="写真プレビューに線形ガイドを自動表示します。中心・幅・向きをドラッグし、スライダーで精密調整できます"
         >線形グラデ</sp-button>
         <sp-button
           id="mgKindCircle"
           data-kind="circle"
           variant="secondary"
-          title="押すと画面中央に赤い柔らかい円の下書きができます。画面上の操作は使いません。大きさ・縦横比・回転・ぼかし・位置はすべてパネルのスライダーで決めます。決まったら「マスクを作成」で確定します"
+          title="写真プレビューに円形ガイドを自動表示します。中心・大きさ・回転・ぼかしをドラッグし、スライダーで精密調整できます"
         >円形</sp-button>
         <sp-button
           id="mgKindSelection"
@@ -61,13 +61,13 @@
           id="mgKindLuminosity"
           data-kind="luminosity"
           variant="secondary"
-          title="画像の明るさからマスクを作ります（Lightroomの明るさ範囲マスク相当）。明部/中間調/暗部と段階を選んで「マスクを作成」を押してください"
+          title="画像の明るさからマスクを作ります。明部/中間調/暗部と段階を選んで「マスクを作成」を押してください"
         >輝度範囲</sp-button>
         <sp-button
           id="mgKindSaturation"
           data-kind="saturation"
           variant="secondary"
-          title="画像の彩度からマスクを作ります（Lightroomの彩度範囲マスク相当）。空の青・紅葉・動物の毛色など、彩度が高い/低い部分だけに効かせたいときに。彩度の高低と段階を選んで「マスクを作成」を押してください"
+          title="画像の彩度からマスクを作ります。空の青・紅葉・動物の毛色など、彩度が高い/低い部分だけに効かせたいときに。彩度の高低と段階を選んで「マスクを作成」を押してください"
         >彩度範囲</sp-button>
         <sp-button
           id="mgKindAll"
@@ -169,7 +169,7 @@
             max="200"
             step="1"
             value="40"
-            title="画像の短辺に対する円の直径の割合です（100%で短辺いっぱい。100%を超えると円が画像からはみ出します。Lightroomでも同様にはみ出せます）。動かすとすぐ反映されます。ダブルクリックで既定値に戻ります"
+            title="画像の短辺に対する円の直径の割合です（100%で短辺いっぱい。100%を超えると円が画像からはみ出します）。動かすとすぐ反映されます。ダブルクリックで既定値に戻ります"
           >
             <sp-label slot="label">大きさ (%)</sp-label>
           </sp-slider>
@@ -219,7 +219,7 @@
             max="100"
             step="1"
             value="50"
-            title="円の中心の左右位置です（0=左端、100=右端、50=中央）。画面ドラッグの代わりにこの数値で決めます。動かすとすぐ反映されます。ダブルクリックで既定値に戻ります"
+            title="円の中心の左右位置です（0=左端、100=右端、50=中央）。写真プレビューの中心ハンドルと連動し、ダブルクリックで既定値に戻ります"
           >
             <sp-label slot="label">位置: 左右 (%)</sp-label>
           </sp-slider>
@@ -229,7 +229,7 @@
             max="100"
             step="1"
             value="50"
-            title="円の中心の上下位置です（0=上端、100=下端、50=中央）。画面ドラッグの代わりにこの数値で決めます。動かすとすぐ反映されます。ダブルクリックで既定値に戻ります"
+            title="円の中心の上下位置です（0=上端、100=下端、50=中央）。写真プレビューの中心ハンドルと連動し、ダブルクリックで既定値に戻ります"
           >
             <sp-label slot="label">位置: 上下 (%)</sp-label>
           </sp-slider>
@@ -252,19 +252,19 @@
         <sp-button
           id="mgBuildAdd"
           variant="secondary"
-          title="いま作っている形を、組み立て中のマスクに足します。足したあと別の種類を選んで次の形を作れます（Lightroomの「追加」相当）"
+          title="いま作っている形を、組み立て中のマスクに足します。足したあと別の種類を選んで次の形を作れます"
         >形を足す</sp-button>
         <sp-button
           id="mgBuildSubtract"
           variant="secondary"
-          title="いま作っている形を、組み立て中のマスクから引きます（Lightroomの「減算」相当）。例: 円形を足したあと、被写体選択を引く"
+          title="いま作っている形を、組み立て中のマスクから引きます。例: 円形を足したあと、被写体選択を引く"
         >形を引く</sp-button>
       </div>
       <sp-button
         id="mgBuildIntersect"
         variant="secondary"
         class="hidden"
-        title="いま組み立て中の範囲と、いま作っている形の「共通部分」だけを残します（Lightroomにはない絞り込み操作）。例: 円形を足したあと輝度範囲で絞り込むと、円の中でかつ明るい部分だけが残ります"
+        title="いま組み立て中の範囲と、いま作っている形の「共通部分」だけを残します。例: 円形を足したあと輝度範囲で絞り込むと、円の中でかつ明るい部分だけが残ります"
       >形で絞り込む（共通部分だけ残す）</sp-button>
       <sp-button
         id="mgCancelDraft"
@@ -287,6 +287,23 @@
 
       <p class="choice-label">3. スライダーで調整（下の一覧で対象を切替）</p>
       <div id="mgList" class="item-list"></div>
+      <div class="section">
+        <h2 class="section-title" data-section="parts">▾ 編集可能なマスク部品</h2>
+        <div class="section-body" id="section-parts">
+          <p id="mgPartsState" class="hint">マスクを選ぶと、追加・減算・絞り込みの部品がここに表示されます。</p>
+          <div id="mgParts" class="item-list"></div>
+          <div class="grid three">
+            <sp-button id="mgPartUp" variant="secondary" title="選択中の部品を1つ上へ移動して再合成します">上へ</sp-button>
+            <sp-button id="mgPartDown" variant="secondary" title="選択中の部品を1つ下へ移動して再合成します">下へ</sp-button>
+            <sp-button id="mgPartDelete" variant="secondary" title="選択中の部品を削除して再合成します">部品を削除</sp-button>
+          </div>
+          <div class="grid three">
+            <sp-button id="mgPartModeAdd" variant="secondary">追加</sp-button>
+            <sp-button id="mgPartModeSubtract" variant="secondary">減算</sp-button>
+            <sp-button id="mgPartModeIntersect" variant="secondary">絞り込み</sp-button>
+          </div>
+        </div>
+      </div>
       <div class="grid two">
         <sp-button
           id="mgOverlay"
@@ -312,13 +329,23 @@
             <sp-button
               id="mgMaskAdd"
               variant="secondary"
-              title="いま選んでいる種類で作った形を、編集対象のマスクに追加します（Lightroomの「追加」相当）。例: 円形マスクに別の円を足す"
+              title="いま選んでいる種類で作った形を、編集対象のマスクに追加します。例: 円形マスクに別の円を足す"
             >マスクに追加</sp-button>
             <sp-button
               id="mgMaskSubtract"
               variant="secondary"
-              title="いま選んでいる種類で作った形を、編集対象のマスクから除外します（Lightroomの「減算」相当）。例: 円形マスクから被写体選択を抜く"
+              title="いま選んでいる種類で作った形を、編集対象のマスクから除外します。例: 円形マスクから被写体選択を抜く"
             >マスクから削除</sp-button>
+            <sp-button
+              id="mgMaskIntersect"
+              variant="secondary"
+              title="いま選んでいる形との共通部分だけを残し、編集可能な絞り込み部品として保存します"
+            >マスクを絞り込む</sp-button>
+            <sp-button
+              id="mgRedoGradient"
+              variant="secondary"
+              title="選択中の線形グラデ部品をPhotoshopキャンバス上でドラッグして引き直す準備をします"
+            >グラデを引き直す</sp-button>
             <sp-button
               id="mgEditMask"
               variant="secondary"
@@ -700,59 +727,6 @@
         </div>
       </div>
 
-      <div class="section">
-        <h2 class="section-title" data-section="help">▸ ヘルプ（使い方）</h2>
-        <div class="section-body collapsed" id="section-help">
-          <p class="hint">
-            使い方: 1で種類を選び、2の「マスクを作成」を押したときだけマスクが作られます。
-            <b>ブラシ</b>: 白で塗ると赤い下書きで見え、範囲に入ります。
-            Xキーで描画色を白⇄黒に入れ替えられる（Photoshop標準の操作。
-            Lightroomの「Alt+ドラッグで選択解除」に相当）ので、黒に切り替えて
-            塗ると範囲から消せます。「マスクを作成」で塗った形がそのまま
-            マスクに。作成後も塗り足しで範囲を広げられます。
-            <b>線形グラデ</b>: 押すと中央に赤いグラデができます（画面上の操作はありません）。
-            向き・幅・位置の4本のスライダーだけで形を決め、「マスクを作成」で確定します。
-            <b>円形</b>: 押すと中央に赤い円ができます（画面上の操作はありません）。
-            大きさ・縦横比・回転・ぼかし幅・ぼかしの柔らかさ・位置（左右/上下）の
-            7本のスライダーだけで形を決め、「マスクを作成」で確定します。
-            <b>選択範囲</b>: 好きな選択ツールで範囲を作ってから作成。
-            <b>輝度範囲</b>: 明部/中間調/暗部と段階（狭さ）を選んでから作成。
-            画像の明るさに応じたマスクになります（Lightroomの明るさ範囲マスク相当）。
-            <b>全体</b>: 画像全体に効くマスク。写真全体の仕上げ調整に。
-            スライダーは編集対象のマスクがあるときだけ表示され、
-            動かした瞬間に反映されます（適用ボタンはありません）。
-            調整レイヤーは対応スライダーを初めて動かしたときに追加されます。
-            スライダーをダブルクリックすると、その項目だけ初期値(0)に戻ります。
-            <b>マスクに追加/マスクから削除</b>: 1で種類を選んで形を作ったあと、
-            確定せずにこのボタンを押すと、その形が編集対象のマスクに白（追加）/
-            黒（削除）で合成されます（Lightroomの「追加」「減算」相当）。
-            例: 円形マスクを作ったあと被写体選択を「マスクから削除」すると、
-            円の中から被写体だけが除外されます。
-            <b>形を組み立てる</b>: マスクを作る<b>前</b>に複数の形を積み上げたいときに使います。
-            1で種類を選んで形を作ったら「形を足す」または「形を引く」を押し、
-            続けて別の種類を選んで次の形を作る、を繰り返せます（下書きは押すたびに消え、
-            組み立て中の形として蓄積されます）。最後に「マスクを作成」を押すと、
-            蓄積したすべての形が1つのマスクになります。「組み立てをやり直す」で
-            蓄積を破棄できます。
-            <b>形で絞り込む</b>: 「形を足す/引く」とは逆に、組み立て中の範囲と
-            いま作った形の<b>共通部分だけ</b>を残します（Lightroomにはない操作）。
-            例: 円形を足したあと輝度範囲で絞り込むと、円の中でかつ明るい部分だけが残ります。
-          </p>
-        </div>
-      </div>
-
-      <sp-button
-        id="readMgDiag"
-        variant="secondary"
-        title="選択中の調整レイヤーの内部設定を読み出します（開発診断用）"
-      >診断: 選択レイヤーの設定を読む</sp-button>
-      <sp-button
-        id="mgPrefDiag"
-        variant="secondary"
-        title="自由変形の「縦横比を固定」がどの設定で制御されているかを調べます（開発診断用）。押す→Photoshopの環境設定＞一般で「レガシー自由変形」を手で切り替える→もう一度押す、で変化したキーが分かります"
-      >診断: 変形の設定を読む</sp-button>
-
-      <p id="mgDiag" class="diag hidden"></p>
     </div>
 
     <script src="js/main.js"></script>

@@ -5,6 +5,4 @@
 名称を使用してください。
 
 Adobe、Photoshop、Lightroom は Adobe Inc. の商標です。本プロジェクトは
-Adobe Inc. と提携・承認関係にありません。ドキュメント中の
-「Lightroom風」「Lightroom相当」という表現は、操作感を説明するための
-記述であり、Adobe製品との互換性・同等性を主張するものではありません。
+Adobe Inc. と提携・承認関係にありません。
