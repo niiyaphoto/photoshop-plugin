@@ -1,7 +1,7 @@
 {
   "manifestVersion": 5,
   "apiVersion": 2,
-  "id": "com.haruharu.mask-groups",
+  "id": "com.niiya.mask-groups",
   "name": "Lrマスク",
   "version": "0.2.0",
   "main": "index.html",
